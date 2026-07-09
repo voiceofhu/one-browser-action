@@ -1,0 +1,454 @@
+name: Server Deploy
+
+on:
+  repository_dispatch:
+    types:
+      - server-release
+  workflow_dispatch:
+    inputs:
+      server_repository:
+        description: one-browser-server repository
+        required: false
+        default: voiceofhu/one-browser-server
+      server_ref:
+        description: one-browser-server ref to build
+        required: false
+        default: main
+      version_tag:
+        description: Version tag to publish. Empty means latest server tag from GitHub API.
+        required: false
+      web_repository:
+        description: one-browser-web repository
+        required: false
+        default: voiceofhu/one-browser-web
+      web_ref:
+        description: one-browser-web ref to build
+        required: false
+        default: main
+      image_name:
+        description: GHCR image name without registry
+        required: false
+      force:
+        description: Build even if the server commit image already exists
+        type: boolean
+        required: false
+        default: false
+      deploy:
+        description: Deploy after publishing the image
+        type: boolean
+        required: false
+        default: true
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  REGISTRY: ghcr.io
+  WEB_WORKDIR: .frontend-build/one-browser-web
+  WEB_BUILD_SCRIPT: build
+  VITE_API_URL: /api
+  VITE_BASE_URL: /
+  PNPM_VERSION: 10.25.0
+
+jobs:
+  resolve:
+    name: Resolve server revision
+    runs-on: ubuntu-latest
+    outputs:
+      server_repository: ${{ steps.refs.outputs.server_repository }}
+      server_ref: ${{ steps.refs.outputs.server_ref }}
+      server_sha: ${{ steps.refs.outputs.server_sha }}
+      server_tag: ${{ steps.refs.outputs.server_tag }}
+      web_repository: ${{ steps.refs.outputs.web_repository }}
+      web_ref: ${{ steps.refs.outputs.web_ref }}
+      web_sha: ${{ steps.refs.outputs.web_sha }}
+      image_name: ${{ steps.refs.outputs.image_name }}
+      image_ref: ${{ steps.refs.outputs.image_ref }}
+      force: ${{ steps.refs.outputs.force }}
+      deploy: ${{ steps.refs.outputs.deploy }}
+      should_run: ${{ steps.plan.outputs.should_run }}
+
+    steps:
+      - name: Resolve refs
+        id: refs
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.ONE_BROWSER_ACTION_TOKEN || github.token }}
+          SERVER_REPOSITORY_INPUT: ${{ inputs.server_repository }}
+          SERVER_REPOSITORY_PAYLOAD: ${{ github.event.client_payload.server_repository }}
+          SERVER_REF_INPUT: ${{ inputs.server_ref }}
+          SERVER_REF_PAYLOAD: ${{ github.event.client_payload.server_ref }}
+          VERSION_TAG_INPUT: ${{ inputs.version_tag }}
+          VERSION_TAG_PAYLOAD: ${{ github.event.client_payload.version_tag }}
+          WEB_REPOSITORY_INPUT: ${{ inputs.web_repository }}
+          WEB_REPOSITORY_PAYLOAD: ${{ github.event.client_payload.web_repository }}
+          WEB_REF_INPUT: ${{ inputs.web_ref }}
+          WEB_REF_PAYLOAD: ${{ github.event.client_payload.web_ref }}
+          IMAGE_NAME_INPUT: ${{ inputs.image_name }}
+          IMAGE_NAME_PAYLOAD: ${{ github.event.client_payload.image_name }}
+          FORCE_INPUT: ${{ inputs.force }}
+          FORCE_PAYLOAD: ${{ github.event.client_payload.force }}
+          DEPLOY_INPUT: ${{ inputs.deploy }}
+          DEPLOY_PAYLOAD: ${{ github.event.client_payload.deploy }}
+        run: |
+          set -euo pipefail
+
+          server_repository="${SERVER_REPOSITORY_INPUT:-${SERVER_REPOSITORY_PAYLOAD:-voiceofhu/one-browser-server}}"
+          server_ref="${SERVER_REF_INPUT:-${SERVER_REF_PAYLOAD:-main}}"
+          web_repository="${WEB_REPOSITORY_INPUT:-${WEB_REPOSITORY_PAYLOAD:-voiceofhu/one-browser-web}}"
+          web_ref="${WEB_REF_INPUT:-${WEB_REF_PAYLOAD:-main}}"
+          image_name="${IMAGE_NAME_INPUT:-${IMAGE_NAME_PAYLOAD:-$server_repository}}"
+          image_name="${image_name,,}"
+          force="${FORCE_INPUT:-${FORCE_PAYLOAD:-false}}"
+          deploy="${DEPLOY_INPUT:-${DEPLOY_PAYLOAD:-true}}"
+
+          server_sha="$(gh api "repos/$server_repository/commits/$server_ref" --jq .sha)"
+          web_sha="$(gh api "repos/$web_repository/commits/$web_ref" --jq .sha)"
+          server_tag="${VERSION_TAG_INPUT:-${VERSION_TAG_PAYLOAD:-}}"
+          if [ -z "$server_tag" ]; then
+            server_tag="$(gh api "repos/$server_repository/tags?per_page=1" --jq '.[0].name // ""')"
+          fi
+
+          case "$force" in
+            true|1|yes) force=true ;;
+            *) force=false ;;
+          esac
+          case "$deploy" in
+            true|1|yes) deploy=true ;;
+            *) deploy=false ;;
+          esac
+
+          {
+            echo "server_repository=$server_repository"
+            echo "server_ref=$server_ref"
+            echo "server_sha=$server_sha"
+            echo "server_tag=$server_tag"
+            echo "web_repository=$web_repository"
+            echo "web_ref=$web_ref"
+            echo "web_sha=$web_sha"
+            echo "image_name=$image_name"
+            echo "image_ref=$REGISTRY/$image_name"
+            echo "force=$force"
+            echo "deploy=$deploy"
+          } >> "$GITHUB_OUTPUT"
+
+          printf 'server %s -> %s\n' "$server_ref" "$server_sha"
+          printf 'web    %s -> %s\n' "$web_ref" "$web_sha"
+          printf 'tag    %s\n' "${server_tag:-none}"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ secrets.GHCR_USERNAME || github.actor }}
+          password: ${{ secrets.GHCR_TOKEN || secrets.ONE_BROWSER_ACTION_TOKEN || github.token }}
+
+      - name: Decide whether to build
+        id: plan
+        shell: bash
+        env:
+          FORCE: ${{ steps.refs.outputs.force }}
+          IMAGE_REF: ${{ steps.refs.outputs.image_ref }}
+          SERVER_SHA: ${{ steps.refs.outputs.server_sha }}
+        run: |
+          set -euo pipefail
+
+          if docker buildx imagetools inspect "$IMAGE_REF:sha-$SERVER_SHA" >/dev/null 2>&1; then
+            image_exists=1
+          else
+            image_exists=0
+          fi
+
+          if [ "$image_exists" = "1" ] && [ "${FORCE:-false}" != "true" ]; then
+            echo "should_run=false" >> "$GITHUB_OUTPUT"
+            echo "Image $IMAGE_REF:sha-$SERVER_SHA already exists; skipping."
+          else
+            echo "should_run=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  frontend:
+    name: Build web dist
+    needs: resolve
+    if: needs.resolve.outputs.should_run == 'true'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout server
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ needs.resolve.outputs.server_repository }}
+          ref: ${{ needs.resolve.outputs.server_sha }}
+          path: server
+          token: ${{ secrets.ONE_BROWSER_ACTION_TOKEN || github.token }}
+          clean: true
+          fetch-depth: 1
+
+      - name: Checkout web
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ needs.resolve.outputs.web_repository }}
+          ref: ${{ needs.resolve.outputs.web_ref }}
+          path: server/${{ env.WEB_WORKDIR }}
+          token: ${{ secrets.ONE_BROWSER_ACTION_TOKEN || github.token }}
+          clean: true
+          fetch-depth: 1
+
+      - name: Refresh web branch
+        shell: bash
+        env:
+          WEB_REF: ${{ needs.resolve.outputs.web_ref }}
+          WEB_PATH: server/${{ env.WEB_WORKDIR }}
+        run: |
+          set -euo pipefail
+
+          if git -C "$WEB_PATH" ls-remote --exit-code --heads origin "refs/heads/$WEB_REF" >/dev/null 2>&1; then
+            git -C "$WEB_PATH" fetch --no-tags --prune --depth=1 origin "+refs/heads/$WEB_REF:refs/remotes/origin/$WEB_REF"
+            git -C "$WEB_PATH" reset --hard "refs/remotes/origin/$WEB_REF"
+          fi
+
+          git -C "$WEB_PATH" clean -ffdx
+          git -C "$WEB_PATH" rev-parse HEAD
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Enable pnpm
+        shell: bash
+        run: |
+          corepack enable
+          corepack prepare "pnpm@${PNPM_VERSION}" --activate
+
+      - name: Build frontend dist
+        shell: bash
+        working-directory: server
+        env:
+          WEB_WORKDIR: ${{ env.WEB_WORKDIR }}
+          WEB_BUILD_SCRIPT: ${{ env.WEB_BUILD_SCRIPT }}
+          VITE_API_URL: ${{ env.VITE_API_URL }}
+          VITE_BASE_URL: ${{ env.VITE_BASE_URL }}
+        run: bash .github/scripts/build-frontend-dist.sh
+
+      - name: Upload frontend dist
+        uses: actions/upload-artifact@v4
+        with:
+          name: frontend-dist
+          path: server/dist
+          if-no-files-found: error
+          retention-days: 1
+
+  build:
+    name: Build ${{ matrix.suffix }} image
+    needs:
+      - resolve
+      - frontend
+    if: needs.resolve.outputs.should_run == 'true'
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            runner: ubuntu-latest
+            suffix: amd64
+          - platform: linux/arm64
+            runner: ubuntu-24.04-arm
+            suffix: arm64
+
+    steps:
+      - name: Checkout server
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ needs.resolve.outputs.server_repository }}
+          ref: ${{ needs.resolve.outputs.server_sha }}
+          path: server
+          token: ${{ secrets.ONE_BROWSER_ACTION_TOKEN || github.token }}
+          clean: true
+          fetch-depth: 1
+
+      - name: Download frontend dist
+        uses: actions/download-artifact@v4
+        with:
+          name: frontend-dist
+          path: server/dist
+
+      - name: Prepare Docker tags
+        id: docker-tags
+        shell: bash
+        env:
+          IMAGE: ${{ needs.resolve.outputs.image_ref }}
+          SERVER_SHA: ${{ needs.resolve.outputs.server_sha }}
+          SERVER_TAG: ${{ needs.resolve.outputs.server_tag }}
+          SUFFIX: ${{ matrix.suffix }}
+        run: |
+          {
+            echo 'tags<<EOF'
+            printf '%s\n' "$IMAGE:sha-$SERVER_SHA-$SUFFIX"
+            if [ -n "$SERVER_TAG" ]; then
+              printf '%s\n' "$IMAGE:$SERVER_TAG-$SUFFIX"
+            fi
+            printf '%s\n' "$IMAGE:latest-$SUFFIX"
+            echo EOF
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ secrets.GHCR_USERNAME || github.actor }}
+          password: ${{ secrets.GHCR_TOKEN || secrets.ONE_BROWSER_ACTION_TOKEN || github.token }}
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v6
+        with:
+          context: server
+          file: server/deploy/docker/Dockerfile
+          platforms: ${{ matrix.platform }}
+          push: true
+          tags: ${{ steps.docker-tags.outputs.tags }}
+          build-args: |
+            RUST_IMAGE=public.ecr.aws/docker/library/rust:1-slim-bookworm
+            RUNTIME_IMAGE=public.ecr.aws/docker/library/debian:bookworm-slim
+            BUILD_APP_ENV=production
+            ONE_BROWSER_GIT_SHA=${{ needs.resolve.outputs.server_sha }}
+            GIT_COMMIT=${{ needs.resolve.outputs.server_sha }}
+            ONE_BROWSER_RUSTC_VERSION=
+          cache-from: type=gha,scope=one-browser-server-${{ matrix.suffix }}
+          cache-to: type=gha,scope=one-browser-server-${{ matrix.suffix }},mode=max
+
+  manifest:
+    name: Publish multi-platform manifest
+    needs:
+      - resolve
+      - build
+    if: needs.resolve.outputs.should_run == 'true'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ secrets.GHCR_USERNAME || github.actor }}
+          password: ${{ secrets.GHCR_TOKEN || secrets.ONE_BROWSER_ACTION_TOKEN || github.token }}
+
+      - name: Create manifest tags
+        shell: bash
+        env:
+          IMAGE: ${{ needs.resolve.outputs.image_ref }}
+          SERVER_SHA: ${{ needs.resolve.outputs.server_sha }}
+          SERVER_TAG: ${{ needs.resolve.outputs.server_tag }}
+        run: |
+          docker buildx imagetools create \
+            -t "$IMAGE:sha-$SERVER_SHA" \
+            "$IMAGE:sha-$SERVER_SHA-amd64" \
+            "$IMAGE:sha-$SERVER_SHA-arm64"
+
+          if [ -n "$SERVER_TAG" ]; then
+            docker buildx imagetools create \
+              -t "$IMAGE:$SERVER_TAG" \
+              "$IMAGE:$SERVER_TAG-amd64" \
+              "$IMAGE:$SERVER_TAG-arm64"
+          fi
+
+          docker buildx imagetools create \
+            -t "$IMAGE:latest" \
+            "$IMAGE:latest-amd64" \
+            "$IMAGE:latest-arm64"
+
+  deploy:
+    name: Deploy server
+    needs:
+      - resolve
+      - manifest
+    if: needs.resolve.outputs.should_run == 'true' && needs.resolve.outputs.deploy == 'true'
+    runs-on: ubuntu-latest
+    concurrency:
+      group: one-browser-production-deploy
+      cancel-in-progress: false
+
+    steps:
+      - name: Checkout server
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ needs.resolve.outputs.server_repository }}
+          ref: ${{ needs.resolve.outputs.server_sha }}
+          path: server
+          token: ${{ secrets.ONE_BROWSER_ACTION_TOKEN || github.token }}
+          clean: true
+          fetch-depth: 1
+
+      - name: Prepare deployment image
+        id: deploy-image
+        shell: bash
+        env:
+          IMAGE: ${{ needs.resolve.outputs.image_ref }}
+          SERVER_SHA: ${{ needs.resolve.outputs.server_sha }}
+          SERVER_TAG: ${{ needs.resolve.outputs.server_tag }}
+        run: |
+          if [ -n "$SERVER_TAG" ]; then
+            echo "image=$IMAGE:$SERVER_TAG" >> "$GITHUB_OUTPUT"
+          else
+            echo "image=$IMAGE:sha-$SERVER_SHA" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Validate deployment secrets
+        shell: bash
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+        run: |
+          missing=0
+          for name in DEPLOY_HOST DEPLOY_USER DEPLOY_SSH_KEY DEPLOY_KNOWN_HOSTS; do
+            if [ -z "$(eval "printf '%s' \"\$$name\"")" ]; then
+              echo "$name is required" >&2
+              missing=1
+            fi
+          done
+          exit "$missing"
+
+      - name: Configure SSH
+        shell: bash
+        working-directory: server
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_PORT: ${{ secrets.DEPLOY_PORT || '22' }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+        run: bash .github/scripts/configure-ssh.sh
+
+      - name: Deploy image with Docker Compose
+        shell: bash
+        working-directory: server
+        env:
+          SSH_HOST: one-browser-deploy
+          REMOTE_DIR: ${{ secrets.DEPLOY_REMOTE_DIR || '/opt/one-browser' }}
+          DOCKER_IMAGE: ${{ steps.deploy-image.outputs.image }}
+          COMPOSE_PROJECT_NAME: ${{ vars.DEPLOY_COMPOSE_PROJECT_NAME || 'one-browser' }}
+          COMPOSE_SERVICE_NAME: ${{ vars.DEPLOY_COMPOSE_SERVICE_NAME || 'server' }}
+          CONTAINER_NAME: ${{ vars.DEPLOY_CONTAINER_NAME || 'one-browser-server' }}
+          DOCKER_NETWORK: ${{ vars.DEPLOY_DOCKER_NETWORK || 'db-networks' }}
+          DOCKER_NETWORK_EXTERNAL: ${{ vars.DEPLOY_DOCKER_NETWORK_EXTERNAL || 'true' }}
+          POSTGRES_HOST: ${{ vars.DEPLOY_POSTGRES_HOST || 'postgres' }}
+          REDIS_HOST: ${{ vars.DEPLOY_REDIS_HOST || 'redis' }}
+          USE_SUDO: ${{ vars.DEPLOY_USE_SUDO || '0' }}
+          PULL_IMAGE: "1"
+          RUN_HEALTHCHECK: "1"
+          SHOW_LOGS: "1"
+          LOG_TAIL: ${{ vars.DEPLOY_LOG_TAIL || '120' }}
+          LOG_FOLLOW_SECONDS: ${{ vars.DEPLOY_LOG_FOLLOW_SECONDS || '5' }}
+        run: bash .github/scripts/deploy-docker-compose.sh

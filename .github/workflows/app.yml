@@ -1,0 +1,217 @@
+name: App Release
+
+on:
+  repository_dispatch:
+    types:
+      - app-release
+  workflow_dispatch:
+    inputs:
+      app_repository:
+        description: one-browser-app repository
+        required: false
+        default: voiceofhu/one-browser-app
+      app_ref:
+        description: one-browser-app ref to build
+        required: false
+        default: main
+      version_tag:
+        description: Release tag, for example v26.707.1821
+        required: true
+
+concurrency:
+  group: app-release-${{ github.event.client_payload.version_tag || inputs.version_tag || github.run_id }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+env:
+  APP_NAME: one-browser-app
+  CI: true
+  CARGO_INCREMENTAL: 0
+  CARGO_TERM_COLOR: always
+  TZ: Asia/Shanghai
+
+jobs:
+  resolve:
+    name: Resolve app revision
+    runs-on: ubuntu-latest
+    outputs:
+      app_repository: ${{ steps.refs.outputs.app_repository }}
+      app_ref: ${{ steps.refs.outputs.app_ref }}
+      app_sha: ${{ steps.refs.outputs.app_sha }}
+      version_tag: ${{ steps.refs.outputs.version_tag }}
+
+    steps:
+      - name: Resolve refs
+        id: refs
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.ONE_BROWSER_ACTION_TOKEN || github.token }}
+          APP_REPOSITORY_INPUT: ${{ inputs.app_repository }}
+          APP_REPOSITORY_PAYLOAD: ${{ github.event.client_payload.app_repository }}
+          APP_REF_INPUT: ${{ inputs.app_ref }}
+          APP_REF_PAYLOAD: ${{ github.event.client_payload.app_ref }}
+          VERSION_TAG_INPUT: ${{ inputs.version_tag }}
+          VERSION_TAG_PAYLOAD: ${{ github.event.client_payload.version_tag }}
+        run: |
+          set -euo pipefail
+
+          app_repository="${APP_REPOSITORY_INPUT:-${APP_REPOSITORY_PAYLOAD:-voiceofhu/one-browser-app}}"
+          app_ref="${APP_REF_INPUT:-${APP_REF_PAYLOAD:-main}}"
+          version_tag="${VERSION_TAG_INPUT:-${VERSION_TAG_PAYLOAD:-}}"
+
+          if [ -z "$version_tag" ]; then
+            echo "version_tag is required" >&2
+            exit 1
+          fi
+          if [[ "$version_tag" != v* ]]; then
+            version_tag="v$version_tag"
+          fi
+
+          app_sha="$(gh api "repos/$app_repository/commits/$app_ref" --jq .sha)"
+
+          {
+            echo "app_repository=$app_repository"
+            echo "app_ref=$app_ref"
+            echo "app_sha=$app_sha"
+            echo "version_tag=$version_tag"
+          } >> "$GITHUB_OUTPUT"
+
+          printf 'app %s -> %s\n' "$app_ref" "$app_sha"
+          printf 'tag %s\n' "$version_tag"
+
+      - name: Ensure public release tag
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION_TAG: ${{ steps.refs.outputs.version_tag }}
+        run: |
+          set -euo pipefail
+
+          if gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$VERSION_TAG" >/dev/null 2>&1; then
+            echo "Tag $VERSION_TAG already exists in $GITHUB_REPOSITORY"
+            exit 0
+          fi
+
+          gh api \
+            --method POST \
+            "repos/$GITHUB_REPOSITORY/git/refs" \
+            -f "ref=refs/tags/$VERSION_TAG" \
+            -f "sha=$GITHUB_SHA" >/dev/null
+
+  build:
+    name: Build ${{ matrix.name }}
+    needs: resolve
+    runs-on: ${{ matrix.platform }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux-x64
+            platform: ubuntu-22.04
+            rust-target: ''
+            args: --config src-tauri/tauri.ci.conf.json --bundles appimage deb --ci
+          - name: windows-x64
+            platform: windows-latest
+            rust-target: ''
+            args: --config src-tauri/tauri.ci.conf.json --bundles nsis --ci
+          - name: macos-arm64
+            platform: macos-14
+            rust-target: aarch64-apple-darwin
+            args: --target aarch64-apple-darwin --config src-tauri/tauri.macos.conf.json --config src-tauri/tauri.ci.conf.json --bundles dmg --ci
+          - name: macos-x64
+            platform: macos-15-intel
+            rust-target: x86_64-apple-darwin
+            args: --target x86_64-apple-darwin --config src-tauri/tauri.macos.conf.json --config src-tauri/tauri.ci.conf.json --bundles dmg --ci
+
+    steps:
+      - name: Checkout app
+        uses: actions/checkout@v7.0.0
+        with:
+          repository: ${{ needs.resolve.outputs.app_repository }}
+          ref: ${{ needs.resolve.outputs.app_sha }}
+          path: app
+          token: ${{ secrets.ONE_BROWSER_ACTION_TOKEN || github.token }}
+          clean: true
+          fetch-depth: 1
+
+      - name: Set timezone (Linux)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: sudo timedatectl set-timezone Asia/Shanghai
+
+      - name: Set timezone (macOS)
+        if: runner.os == 'macOS'
+        shell: bash
+        run: sudo systemsetup -settimezone Asia/Shanghai
+
+      - name: Set timezone (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: tzutil /s "China Standard Time"
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v6.0.9
+        with:
+          version: 10.32.1
+          run_install: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6.0.0
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: app/pnpm-lock.yaml
+
+      - name: Validate release tag
+        shell: bash
+        working-directory: app
+        env:
+          VERSION_TAG: ${{ needs.resolve.outputs.version_tag }}
+        run: node -e "const tag=process.env.VERSION_TAG.replace(/^v/,''); const pkg=require('./package.json').version; if (tag !== pkg) { console.error('Tag '+tag+' does not match package.json version '+pkg); process.exit(1); }"
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Add Rust target
+        if: matrix.rust-target != ''
+        run: rustup target add ${{ matrix.rust-target }}
+
+      - name: Cache Cargo
+        uses: actions/cache@v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            app/src-tauri/target
+          key: ${{ runner.os }}-${{ matrix.name }}-cargo-${{ hashFiles('app/src-tauri/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-${{ matrix.name }}-cargo-
+
+      - name: Install Linux dependencies
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+
+      - name: Install dependencies
+        working-directory: app
+        run: pnpm install --frozen-lockfile --prefer-offline
+
+      - name: Build and upload Tauri bundles
+        uses: tauri-apps/tauri-action@v1.0.0
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        with:
+          projectPath: app
+          tagName: ${{ needs.resolve.outputs.version_tag }}
+          releaseName: ${{ env.APP_NAME }} ${{ needs.resolve.outputs.version_tag }}
+          releaseBody: Desktop installers for ${{ env.APP_NAME }} ${{ needs.resolve.outputs.version_tag }}.
+          releaseDraft: false
+          prerelease: ${{ contains(needs.resolve.outputs.version_tag, '-') }}
+          generateReleaseNotes: true
+          uploadUpdaterJson: false
+          uploadUpdaterSignatures: false
+          args: ${{ matrix.args }}
+          releaseAssetNamePattern: ${{ env.APP_NAME }}_[version]_[platform]_[arch][setup].[ext]

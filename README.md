@@ -92,6 +92,68 @@ Triggers:
 - `repository_dispatch`: `app-release`
 - `workflow_dispatch`: manual app release
 
+## Manual Trigger Commands
+
+Run these commands from this repository with `GH_TOKEN` in `.env`:
+
+```bash
+GH_TOKEN=ghp_xxx
+```
+
+The token must be able to read tags from the private source repositories and
+run workflows in `voiceofhu/one-browser-action`. Keep the raw token only; do
+not include a `Bearer` prefix or shell quotes in `.env`. Classic tokens usually
+start with `ghp_`; fine-grained tokens usually start with `github_pat_`.
+
+Check the local token before triggering a release:
+
+```bash
+make check-token
+```
+
+For a fine-grained personal access token, select the `voiceofhu` organization
+and allow repository access to `one-browser-action`, `one-browser-server`, and
+`one-browser-app`. It needs metadata/tag read access for source repositories
+and `Actions: read/write` for `one-browser-action`. A classic token should have
+the `repo` scope.
+
+Trigger a server release:
+
+```bash
+make deploy-server
+```
+
+By default, this uses the latest tag from `voiceofhu/one-browser-server`.
+
+Common server options:
+
+```bash
+make deploy-server \
+  TAG=v26.709.1542 \
+  SERVER_REF=v26.709.1542 \
+  WEB_REF=main \
+  IMAGE_NAME=voiceofhu/one-browser-server
+```
+
+Build without deploying:
+
+```bash
+make deploy-server TAG=v26.709.1542 DEPLOY=false
+```
+
+Trigger an app release:
+
+```bash
+make deploy-app
+```
+
+By default, this uses the latest tag from `voiceofhu/one-browser-app`, and app
+manual release builds the same ref as the tag. Override it when needed:
+
+```bash
+make deploy-app TAG=v26.707.1821 APP_REF=main
+```
+
 ## Secrets
 
 The private source repositories need `ONE_BROWSER_ACTION_TOKEN` only for their

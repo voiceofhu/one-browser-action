@@ -15,6 +15,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: windows-app-debug-${{ inputs.app_repository }}-${{ inputs.app_ref }}
+  cancel-in-progress: true
+
 env:
   CI: true
   CARGO_INCREMENTAL: 0
@@ -54,22 +58,25 @@ jobs:
           cache: pnpm
           cache-dependency-path: app/pnpm-lock.yaml
 
+      - name: Cache installed frontend dependencies
+        id: frontend-dependencies
+        uses: actions/cache@v6.1.0
+        with:
+          path: app/node_modules
+          key: windows-app-debug-node22-pnpm10.32.1-${{ hashFiles('app/pnpm-lock.yaml') }}
+
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Cache Cargo
-        uses: actions/cache@v6.1.0
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2.9.1
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            app/src-tauri/target
-          key: windows-app-debug-cargo-${{ hashFiles('app/src-tauri/Cargo.lock') }}
-          restore-keys: |
-            windows-app-debug-cargo-
-            Windows-windows-x64-cargo-
+          workspaces: app/src-tauri -> target
+          shared-key: windows-app-debug
+          cache-on-failure: true
 
       - name: Install dependencies
+        if: steps.frontend-dependencies.outputs.cache-hit != 'true'
         working-directory: app
         run: pnpm install --frozen-lockfile --prefer-offline
 

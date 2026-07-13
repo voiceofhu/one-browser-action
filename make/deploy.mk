@@ -8,10 +8,13 @@ fi
 endef
 
 define normalize_gh_token
-api_token="$${GH_TOKEN#Bearer }"; \
-api_token="$${api_token#bearer }"; \
+api_token="$${GH_TOKEN}"; \
 api_token="$${api_token%\"}"; \
 api_token="$${api_token#\"}"; \
+api_token="$${api_token%\'}"; \
+api_token="$${api_token#\'}"; \
+api_token="$${api_token#Bearer }"; \
+api_token="$${api_token#bearer }"; \
 if [ -z "$$api_token" ]; then \
 	echo "GH_TOKEN is empty after normalization. Use GH_TOKEN=ghp_... or GH_TOKEN=github_pat_... in .env." >&2; \
 	exit 1; \

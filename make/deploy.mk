@@ -1,4 +1,4 @@
-.PHONY: deploy-server deploy-app check-token
+.PHONY: deploy-server deploy-app debug-app check-token
 
 define require_gh_token
 if [ -z "$${GH_TOKEN:-}" ]; then \
@@ -122,6 +122,7 @@ check-token:
 	check_api "app tags" "repos/$(APP_REPOSITORY)/tags?per_page=1"; \
 	check_api "server workflow" "repos/$(ACTION_REPOSITORY)/actions/workflows/server.yml"; \
 	check_api "app workflow" "repos/$(ACTION_REPOSITORY)/actions/workflows/app.yml"; \
+	check_api "app debug workflow" "repos/$(ACTION_REPOSITORY)/actions/workflows/app-debug.yml"; \
 	echo "Token basic checks passed. Workflow dispatch still requires Actions: write on $(ACTION_REPOSITORY)."
 
 deploy-server:
@@ -190,3 +191,20 @@ deploy-app:
 	payload="$$(ruby -rjson -e 'puts JSON.generate({ref: ARGV[0], inputs: {app_repository: ARGV[1], app_ref: ARGV[2], version_tag: ARGV[3]}})' "$(ACTION_REF)" "$(APP_REPOSITORY)" "$$app_ref" "$$tag")"; \
 	$(call dispatch_workflow,app.yml); \
 	echo "Triggered app.yml in $(ACTION_REPOSITORY)"
+
+debug-app:
+	@set -euo pipefail; \
+	$(require_gh_token); \
+	$(normalize_gh_token); \
+	app_ref="$(APP_REF)"; \
+	if [ -z "$$app_ref" ]; then app_ref="main"; fi; \
+	printf '%s\n' \
+		"Windows app debug inputs:" \
+		"  action_repository: $(ACTION_REPOSITORY)" \
+		"  action_ref:        $(ACTION_REF)" \
+		"  app_repository:    $(APP_REPOSITORY)" \
+		"  app_ref:           $$app_ref"; \
+	case "$(DRY_RUN)" in true|1|yes|y) exit 0 ;; esac; \
+	payload="$$(ruby -rjson -e 'puts JSON.generate({ref: ARGV[0], inputs: {app_repository: ARGV[1], app_ref: ARGV[2]}})' "$(ACTION_REF)" "$(APP_REPOSITORY)" "$$app_ref")"; \
+	$(call dispatch_workflow,app-debug.yml); \
+	echo "Triggered app-debug.yml in $(ACTION_REPOSITORY)"

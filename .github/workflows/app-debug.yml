@@ -1,0 +1,89 @@
+name: Windows App Debug
+
+on:
+  workflow_dispatch:
+    inputs:
+      app_repository:
+        description: one-browser-app repository
+        required: false
+        default: voiceofhu/one-browser-app
+      app_ref:
+        description: one-browser-app branch, tag, or commit to build
+        required: false
+        default: main
+
+permissions:
+  contents: read
+
+env:
+  CI: true
+  CARGO_INCREMENTAL: 0
+  CARGO_TERM_COLOR: always
+  TZ: Asia/Shanghai
+
+jobs:
+  build:
+    name: Build Windows x64 debug package
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout app
+        uses: actions/checkout@v7.0.0
+        with:
+          repository: ${{ inputs.app_repository }}
+          ref: ${{ inputs.app_ref }}
+          path: app
+          token: ${{ secrets.ONE_BROWSER_ACTION_TOKEN || github.token }}
+          clean: true
+          fetch-depth: 1
+
+      - name: Set timezone
+        shell: pwsh
+        run: tzutil /s "China Standard Time"
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v6.0.9
+        with:
+          version: 10.32.1
+          run_install: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6.0.0
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: app/pnpm-lock.yaml
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo
+        uses: actions/cache@v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            app/src-tauri/target
+          key: windows-app-debug-cargo-${{ hashFiles('app/src-tauri/Cargo.lock') }}
+          restore-keys: |
+            windows-app-debug-cargo-
+            Windows-windows-x64-cargo-
+
+      - name: Install dependencies
+        working-directory: app
+        run: pnpm install --frozen-lockfile --prefer-offline
+
+      - name: Build debug NSIS package
+        working-directory: app
+        run: pnpm exec tauri build --debug --features production-devtools --config src-tauri/tauri.ci.conf.json --bundles nsis --ci
+
+      - name: Upload debug package
+        uses: actions/upload-artifact@v4
+        with:
+          name: one-browser-app-windows-x64-debug-${{ github.run_number }}
+          path: |
+            app/src-tauri/target/debug/bundle/nsis/*.exe
+            app/src-tauri/target/debug/one-browser.exe
+            app/src-tauri/target/debug/*.pdb
+          if-no-files-found: error
+          retention-days: 14

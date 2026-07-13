@@ -92,6 +92,15 @@ Triggers:
 - `repository_dispatch`: `app-release`
 - `workflow_dispatch`: manual app release
 
+### Windows App Debug
+
+File: `.github/workflows/app-debug.yml`
+
+This manually triggered workflow builds a Windows x64 Tauri debug package from
+a selected `one-browser-app` branch, tag, or commit. It uploads the NSIS
+installer, raw executable, and PDB symbols as a workflow artifact for 14 days.
+It does not create a tag or GitHub Release.
+
 ## Manual Trigger Commands
 
 Run these commands from this repository with `GH_TOKEN` in `.env`:
@@ -153,6 +162,15 @@ manual release builds the same ref as the tag. Override it when needed:
 ```bash
 make deploy-app TAG=v26.707.1821 APP_REF=main
 ```
+
+Trigger a Windows debug package build from `main`:
+
+```bash
+make debug-app APP_REF=main
+```
+
+`APP_REF` can also be a test branch, tag, or exact commit SHA. The package is
+available from the completed `Windows App Debug` run under `Artifacts`.
 
 ## Secrets
 

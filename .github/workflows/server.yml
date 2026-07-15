@@ -1,9 +1,6 @@
 name: Server Deploy
 
 on:
-  repository_dispatch:
-    types:
-      - server-release
   workflow_dispatch:
     inputs:
       server_repository:
@@ -74,32 +71,24 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.ONE_BROWSER_ACTION_TOKEN || github.token }}
           SERVER_REPOSITORY_INPUT: ${{ inputs.server_repository }}
-          SERVER_REPOSITORY_PAYLOAD: ${{ github.event.client_payload.server_repository }}
           SERVER_REF_INPUT: ${{ inputs.server_ref }}
-          SERVER_REF_PAYLOAD: ${{ github.event.client_payload.server_ref }}
           VERSION_TAG_INPUT: ${{ inputs.version_tag }}
-          VERSION_TAG_PAYLOAD: ${{ github.event.client_payload.version_tag }}
           WEB_REPOSITORY_INPUT: ${{ inputs.web_repository }}
-          WEB_REPOSITORY_PAYLOAD: ${{ github.event.client_payload.web_repository }}
           WEB_REF_INPUT: ${{ inputs.web_ref }}
-          WEB_REF_PAYLOAD: ${{ github.event.client_payload.web_ref }}
           IMAGE_NAME_INPUT: ${{ inputs.image_name }}
-          IMAGE_NAME_PAYLOAD: ${{ github.event.client_payload.image_name }}
           FORCE_INPUT: ${{ inputs.force }}
-          FORCE_PAYLOAD: ${{ github.event.client_payload.force }}
           DEPLOY_INPUT: ${{ inputs.deploy }}
-          DEPLOY_PAYLOAD: ${{ github.event.client_payload.deploy }}
         run: |
           set -euo pipefail
 
-          server_repository="${SERVER_REPOSITORY_INPUT:-${SERVER_REPOSITORY_PAYLOAD:-voiceofhu/one-browser-server}}"
-          server_ref="${SERVER_REF_INPUT:-${SERVER_REF_PAYLOAD:-}}"
-          web_repository="${WEB_REPOSITORY_INPUT:-${WEB_REPOSITORY_PAYLOAD:-voiceofhu/one-browser-web}}"
-          web_ref="${WEB_REF_INPUT:-${WEB_REF_PAYLOAD:-}}"
-          image_name="${IMAGE_NAME_INPUT:-${IMAGE_NAME_PAYLOAD:-$server_repository}}"
+          server_repository="${SERVER_REPOSITORY_INPUT:-voiceofhu/one-browser-server}"
+          server_ref="${SERVER_REF_INPUT:-}"
+          web_repository="${WEB_REPOSITORY_INPUT:-voiceofhu/one-browser-web}"
+          web_ref="${WEB_REF_INPUT:-}"
+          image_name="${IMAGE_NAME_INPUT:-$server_repository}"
           image_name="${image_name,,}"
-          force="${FORCE_INPUT:-${FORCE_PAYLOAD:-false}}"
-          deploy="${DEPLOY_INPUT:-${DEPLOY_PAYLOAD:-true}}"
+          force="${FORCE_INPUT:-false}"
+          deploy="${DEPLOY_INPUT:-true}"
 
           if [ -z "$server_ref" ]; then
             server_ref="$(gh api "repos/$server_repository" --jq .default_branch)"
@@ -110,7 +99,7 @@ jobs:
 
           server_sha="$(gh api "repos/$server_repository/commits/$server_ref" --jq .sha)"
           web_sha="$(gh api "repos/$web_repository/commits/$web_ref" --jq .sha)"
-          server_tag="${VERSION_TAG_INPUT:-${VERSION_TAG_PAYLOAD:-}}"
+          server_tag="${VERSION_TAG_INPUT:-}"
           if [ -n "$server_tag" ] && [[ "$server_tag" != v* ]]; then
             server_tag="v$server_tag"
           fi

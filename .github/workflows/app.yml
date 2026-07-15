@@ -1,9 +1,6 @@
 name: App Release
 
 on:
-  repository_dispatch:
-    types:
-      - app-release
   workflow_dispatch:
     inputs:
       app_repository:
@@ -18,7 +15,7 @@ on:
         required: false
 
 concurrency:
-  group: app-release-${{ github.event.client_payload.version_tag || inputs.version_tag || github.run_id }}
+  group: app-release-${{ inputs.version_tag || github.run_id }}
   cancel-in-progress: false
 
 permissions:
@@ -48,17 +45,14 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.ONE_BROWSER_ACTION_TOKEN || github.token }}
           APP_REPOSITORY_INPUT: ${{ inputs.app_repository }}
-          APP_REPOSITORY_PAYLOAD: ${{ github.event.client_payload.app_repository }}
           APP_REF_INPUT: ${{ inputs.app_ref }}
-          APP_REF_PAYLOAD: ${{ github.event.client_payload.app_ref }}
           VERSION_TAG_INPUT: ${{ inputs.version_tag }}
-          VERSION_TAG_PAYLOAD: ${{ github.event.client_payload.version_tag }}
         run: |
           set -euo pipefail
 
-          app_repository="${APP_REPOSITORY_INPUT:-${APP_REPOSITORY_PAYLOAD:-voiceofhu/one-browser-app}}"
-          app_ref="${APP_REF_INPUT:-${APP_REF_PAYLOAD:-}}"
-          version_tag="${VERSION_TAG_INPUT:-${VERSION_TAG_PAYLOAD:-}}"
+          app_repository="${APP_REPOSITORY_INPUT:-voiceofhu/one-browser-app}"
+          app_ref="${APP_REF_INPUT:-}"
+          version_tag="${VERSION_TAG_INPUT:-}"
 
           if [ -z "$app_ref" ]; then
             app_ref="$(gh api "repos/$app_repository" --jq .default_branch)"

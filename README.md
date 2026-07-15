@@ -12,29 +12,11 @@ stay private:
 ## Recommended Shape
 
 Keep source repositories private, but run the heavy CI/CD implementation here.
-Private source repositories keep only thin workflows that send
-`repository_dispatch` events to this repository.
-
-For server releases, `one-browser-server` pushes a tag and dispatches
-`server-release` to this repository:
-
-```yaml
-on:
-  push:
-    tags:
-      - "v*.*.*"
-
-jobs:
-  dispatch:
-    runs-on: ubuntu-latest
-    steps:
-      - run: gh api --method POST repos/voiceofhu/one-browser-action/dispatches ...
-```
-
-For app releases, `one-browser-app` pushes a tag and dispatches `app-release`
-to this repository. This repository then checks out the private app repository,
-builds installers, and publishes them to this repository's public GitHub
-Release.
+The source repositories do not need tag-trigger workflows. Their local
+`make push-tag` targets push the tag first, then call `make deploy-server` or
+`make deploy-app` in this repository with the pushed version and exact source
+commit SHA. This repository then checks out that immutable source revision and
+runs the build.
 
 ## Workflows
 
@@ -42,15 +24,14 @@ Release.
 
 File: `.github/workflows/server.yml`
 
-This workflow receives server release events and runs in this repository. It
+This workflow is dispatched by the local `make deploy-server` command. It
 resolves the server revision, checks whether the matching GHCR image already
 exists, and only builds/deploys when the run is forced or the server commit has
 not been built yet.
 
 Triggers:
 
-- `repository_dispatch`: `server-release`
-- `workflow_dispatch`: manual deploy
+- `workflow_dispatch`: local Make or manual deploy
 
 Build inputs:
 
@@ -82,7 +63,7 @@ Image tags pushed:
 
 File: `.github/workflows/app.yml`
 
-This workflow receives app release events and runs in this repository. It checks
+This workflow is dispatched by the local `make deploy-app` command. It checks
 out the requested app ref, or the latest commit on the repository's default
 branch. When no release tag is supplied, it reads the version from that commit's
 `package.json`, builds the desktop bundles, and uploads assets to the release in
@@ -90,8 +71,7 @@ this public repository.
 
 Triggers:
 
-- `repository_dispatch`: `app-release`
-- `workflow_dispatch`: manual app release
+- `workflow_dispatch`: local Make or manual app release
 
 ### Windows App Debug
 
@@ -123,9 +103,9 @@ make check-token
 
 For a fine-grained personal access token, select the `voiceofhu` organization
 and allow repository access to `one-browser-action`, `one-browser-server`, and
-`one-browser-app`. It needs metadata/tag read access for source repositories
-and `Actions: read/write` for `one-browser-action`. A classic token should have
-the `repo` scope.
+`one-browser-app`. It needs `Contents: read` for source repositories and
+`Actions: read/write` for `one-browser-action`. A classic token should have the
+`repo` scope.
 
 Trigger a server release:
 
@@ -179,11 +159,9 @@ available from the completed `Windows App Debug` run under `Artifacts`.
 
 ## Secrets
 
-The private source repositories need `ONE_BROWSER_ACTION_TOKEN` only for their
-thin dispatch workflows. The token must be able to call
-`repos/voiceofhu/one-browser-action/dispatches`.
-
-This public action repository needs `ONE_BROWSER_ACTION_TOKEN` to checkout the
+The source repositories no longer need an Actions dispatch token. The local
+`one-browser-action/.env` provides `GH_TOKEN` for workflow dispatch, while this
+public action repository needs `ONE_BROWSER_ACTION_TOKEN` to checkout the
 private source repositories:
 
 | Secret | Purpose |
@@ -204,7 +182,7 @@ deploy job runs here:
 
 ## Trigger Note
 
-A workflow in this repository cannot directly receive `push` events from a
-different repository. The private source repositories handle that by keeping
-thin tag-trigger workflows that call GitHub's repository dispatch API. The real
-server/app release jobs then run in this repository.
+`make push-tag` in each source repository stops immediately if the tag push
+fails. After a successful push it invokes the matching local deploy target with
+the current source commit SHA. A later dispatch failure does not roll back the
+already-pushed Git tag.

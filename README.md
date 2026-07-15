@@ -66,8 +66,8 @@ File: `.github/workflows/app.yml`
 This workflow is dispatched by the local `make deploy-app` command. It checks
 out the requested app ref, or the latest commit on the repository's default
 branch. When no release tag is supplied, it reads the version from that commit's
-`package.json`, builds the desktop bundles, and uploads assets to the release in
-this public repository.
+`package.json`, creates the Release in `voiceofhu/one-browser-action`, builds
+the desktop bundles, and uploads the installers to this public repository.
 
 Triggers:
 
@@ -161,12 +161,12 @@ available from the completed `Windows App Debug` run under `Artifacts`.
 
 The source repositories no longer need an Actions dispatch token. The local
 `one-browser-action/.env` provides `GH_TOKEN` for workflow dispatch, while this
-public action repository needs `ONE_BROWSER_ACTION_TOKEN` to checkout the
-private source repositories:
+public action repository needs `ONE_BROWSER_ACTION_TOKEN` to checkout private
+source repositories and publish its App Releases:
 
 | Secret | Purpose |
 | --- | --- |
-| `ONE_BROWSER_ACTION_TOKEN` | Fine-grained PAT that can read the private source repositories. |
+| `ONE_BROWSER_ACTION_TOKEN` | PAT with source repository read access and `Contents: read/write` on `one-browser-action`. |
 
 Server deploy secrets now live in this public action repository because the
 deploy job runs here:

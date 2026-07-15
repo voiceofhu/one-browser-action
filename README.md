@@ -12,7 +12,7 @@ stay private:
 ## Recommended Shape
 
 Keep source repositories private, but run the heavy CI/CD implementation here.
-Private source repositories keep only thin tag-trigger workflows that send
+Private source repositories keep only thin workflows that send
 `repository_dispatch` events to this repository.
 
 For server releases, `one-browser-server` pushes a tag and dispatches
@@ -55,17 +55,17 @@ Triggers:
 Build inputs:
 
 - `server_repository`: server repository, default `voiceofhu/one-browser-server`
-- `server_ref`: server branch/tag/sha, default `main`
-- `version_tag`: image version tag. Empty means latest server tag from GitHub API
+- `server_ref`: server branch/tag/sha. Empty means the repository's default branch
+- `version_tag`: optional image version tag. Empty publishes only SHA and `latest`
 - `web_repository`: web repository, default `voiceofhu/one-browser-web`
-- `web_ref`: web branch/tag/sha, default `main`
+- `web_ref`: web branch/tag/sha. Empty means the repository's default branch
 - `image_name`: GHCR image name without `ghcr.io/`
 - `force`: rebuild even if `sha-<server_sha>` already exists
 - `deploy`: deploy after publishing the image
 
 The workflow:
 
-1. Reads the server commit and latest server tag through the GitHub API.
+1. Resolves the requested refs, or each repository's latest default-branch commit, through the GitHub API.
 2. Checks out `one-browser-server`.
 3. Checks out `one-browser-web` into the server frontend build directory.
 4. Runs the server repo's existing `.github/scripts/build-frontend-dist.sh`.
@@ -75,7 +75,7 @@ The workflow:
 Image tags pushed:
 
 - `sha-<server_sha>`
-- latest server tag, for example `v26.709.1542`
+- an optional explicit version tag, for example `v26.709.1542`
 - `latest`
 
 ### App Release
@@ -83,9 +83,10 @@ Image tags pushed:
 File: `.github/workflows/app.yml`
 
 This workflow receives app release events and runs in this repository. It checks
-out the app commit from the private source repository, validates that the source
-tag matches `one-browser-app/package.json`, builds the desktop bundles, and
-uploads assets to the release in this public repository.
+out the requested app ref, or the latest commit on the repository's default
+branch. When no release tag is supplied, it reads the version from that commit's
+`package.json`, builds the desktop bundles, and uploads assets to the release in
+this public repository.
 
 Triggers:
 
@@ -109,8 +110,8 @@ Run these commands from this repository with `GH_TOKEN` in `.env`:
 GH_TOKEN=ghp_xxx
 ```
 
-The token must be able to read tags from the private source repositories and
-run workflows in `voiceofhu/one-browser-action`. Keep the raw token only; do
+The token must be able to read the private source repositories and run workflows
+in `voiceofhu/one-browser-action`. Keep the raw token only; do
 not include a `Bearer` prefix or shell quotes in `.env`. Classic tokens usually
 start with `ghp_`; fine-grained tokens usually start with `github_pat_`.
 
@@ -132,7 +133,10 @@ Trigger a server release:
 make deploy-server
 ```
 
-By default, this uses the latest tag from `voiceofhu/one-browser-server`.
+By default, this builds the latest commit on
+`voiceofhu/one-browser-server`'s default branch. It publishes the immutable
+`sha-<commit>` tag plus `latest`; pass `TAG` only when a versioned image tag is
+also needed.
 
 Common server options:
 
@@ -156,8 +160,9 @@ Trigger an app release:
 make deploy-app
 ```
 
-By default, this uses the latest tag from `voiceofhu/one-browser-app`, and app
-manual release builds the same ref as the tag. Override it when needed:
+By default, this builds the latest commit on
+`voiceofhu/one-browser-app`'s default branch and reads the release version from
+that commit's `package.json`. Override the source ref or version when needed:
 
 ```bash
 make deploy-app TAG=v26.707.1821 APP_REF=main

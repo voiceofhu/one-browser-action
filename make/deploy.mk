@@ -25,30 +25,6 @@ define print_github_api_hint
 echo "Check .env has a raw token such as GH_TOKEN=ghp_... or GH_TOKEN=github_pat_..., without a Bearer prefix, and that the token can read the source repos and dispatch workflows in $(ACTION_REPOSITORY)." >&2
 endef
 
-define resolve_latest_tag
-latest_response="$$(mktemp)"; \
-if ! latest_status="$$(curl -sS -o "$$latest_response" -w "%{http_code}" \
-	-H "Authorization: Bearer $$api_token" \
-	-H "Accept: application/vnd.github+json" \
-	-H "X-GitHub-Api-Version: 2022-11-28" \
-	"$(GITHUB_API_URL)/repos/$(1)/tags?per_page=1")"; then \
-	echo "GitHub API request failed while reading latest tag for $(1)." >&2; \
-	$(print_github_api_hint); \
-	cat "$$latest_response" >&2 || true; \
-	rm -f "$$latest_response"; \
-	exit 1; \
-fi; \
-if [ "$$latest_status" -lt 200 ] || [ "$$latest_status" -ge 300 ]; then \
-	echo "GitHub API failed while reading latest tag for $(1): HTTP $$latest_status" >&2; \
-	$(print_github_api_hint); \
-	cat "$$latest_response" >&2 || true; \
-	rm -f "$$latest_response"; \
-	exit 1; \
-fi; \
-tag="$$(ruby -rjson -e 'tags = JSON.parse(ARGF.read); puts((tags[0] || {})["name"].to_s)' "$$latest_response")"; \
-rm -f "$$latest_response"
-endef
-
 define dispatch_workflow
 dispatch_response="$$(mktemp)"; \
 if ! dispatch_status="$$(curl -sS -o "$$dispatch_response" -w "%{http_code}" \
@@ -121,8 +97,8 @@ check-token:
 	login="$$(ruby -rjson -e 'user = JSON.parse(ARGF.read); puts user["login"]' "$$user_response")"; \
 	rm -f "$$user_response"; \
 	echo "OK   token identity: $$login"; \
-	check_api "server tags" "repos/$(SERVER_REPOSITORY)/tags?per_page=1"; \
-	check_api "app tags" "repos/$(APP_REPOSITORY)/tags?per_page=1"; \
+	check_api "server repository" "repos/$(SERVER_REPOSITORY)"; \
+	check_api "app repository" "repos/$(APP_REPOSITORY)"; \
 	check_api "server workflow" "repos/$(ACTION_REPOSITORY)/actions/workflows/server.yml"; \
 	check_api "app workflow" "repos/$(ACTION_REPOSITORY)/actions/workflows/app.yml"; \
 	check_api "app debug workflow" "repos/$(ACTION_REPOSITORY)/actions/workflows/app-debug.yml"; \
@@ -133,17 +109,8 @@ deploy-server:
 	$(require_gh_token); \
 	$(normalize_gh_token); \
 	tag="$(VERSION_TAG)"; \
-	if [ -z "$$tag" ]; then \
-		$(call resolve_latest_tag,$(SERVER_REPOSITORY)); \
-		if [ -z "$$tag" ]; then \
-			echo "Could not resolve latest tag for $(SERVER_REPOSITORY)" >&2; \
-			echo "Usage: make deploy-server TAG=v26.709.1542" >&2; \
-			exit 1; \
-		fi; \
-	fi; \
-	if [[ "$$tag" != v* ]]; then tag="v$$tag"; fi; \
+	if [ -n "$$tag" ] && [[ "$$tag" != v* ]]; then tag="v$$tag"; fi; \
 	server_ref="$(SERVER_REF)"; \
-	if [ -z "$$server_ref" ]; then server_ref="$$tag"; fi; \
 	image_name="$(IMAGE_NAME)"; \
 	if [ -z "$$image_name" ]; then image_name="$(SERVER_REPOSITORY)"; fi; \
 	force="$(FORCE)"; \
@@ -155,8 +122,8 @@ deploy-server:
 		"  action_repository: $(ACTION_REPOSITORY)" \
 		"  action_ref:        $(ACTION_REF)" \
 		"  server_repository: $(SERVER_REPOSITORY)" \
-		"  server_ref:        $$server_ref" \
-		"  version_tag:       $$tag" \
+		"  server_ref:        $${server_ref:-default branch}" \
+		"  version_tag:       $${tag:-none}" \
 		"  web_repository:    $(WEB_REPOSITORY)" \
 		"  web_ref:           $(WEB_REF)" \
 		"  image_name:        $$image_name" \
@@ -172,24 +139,15 @@ deploy-app:
 	$(require_gh_token); \
 	$(normalize_gh_token); \
 	tag="$(VERSION_TAG)"; \
-	if [ -z "$$tag" ]; then \
-		$(call resolve_latest_tag,$(APP_REPOSITORY)); \
-		if [ -z "$$tag" ]; then \
-			echo "Could not resolve latest tag for $(APP_REPOSITORY)" >&2; \
-			echo "Usage: make deploy-app TAG=v26.707.1821" >&2; \
-			exit 1; \
-		fi; \
-	fi; \
-	if [[ "$$tag" != v* ]]; then tag="v$$tag"; fi; \
+	if [ -n "$$tag" ] && [[ "$$tag" != v* ]]; then tag="v$$tag"; fi; \
 	app_ref="$(APP_REF)"; \
-	if [ -z "$$app_ref" ]; then app_ref="$$tag"; fi; \
 	printf '%s\n' \
 		"App release inputs:" \
 		"  action_repository: $(ACTION_REPOSITORY)" \
 		"  action_ref:        $(ACTION_REF)" \
 		"  app_repository:    $(APP_REPOSITORY)" \
-		"  app_ref:           $$app_ref" \
-		"  version_tag:       $$tag"; \
+		"  app_ref:           $${app_ref:-default branch}" \
+		"  version_tag:       $${tag:-package.json}"; \
 	case "$(DRY_RUN)" in true|1|yes|y) exit 0 ;; esac; \
 	payload="$$(ruby -rjson -e 'puts JSON.generate({ref: ARGV[0], inputs: {app_repository: ARGV[1], app_ref: ARGV[2], version_tag: ARGV[3]}})' "$(ACTION_REF)" "$(APP_REPOSITORY)" "$$app_ref" "$$tag")"; \
 	$(call dispatch_workflow,app.yml); \

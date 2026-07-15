@@ -11,12 +11,11 @@ on:
         required: false
         default: voiceofhu/one-browser-app
       app_ref:
-        description: one-browser-app ref to build
+        description: one-browser-app branch, tag, or commit. Empty means the default branch.
         required: false
-        default: main
       version_tag:
-        description: Release tag, for example v26.707.1821
-        required: true
+        description: Release tag. Empty reads the version from package.json at the resolved commit.
+        required: false
 
 concurrency:
   group: app-release-${{ github.event.client_payload.version_tag || inputs.version_tag || github.run_id }}
@@ -58,18 +57,30 @@ jobs:
           set -euo pipefail
 
           app_repository="${APP_REPOSITORY_INPUT:-${APP_REPOSITORY_PAYLOAD:-voiceofhu/one-browser-app}}"
-          app_ref="${APP_REF_INPUT:-${APP_REF_PAYLOAD:-main}}"
+          app_ref="${APP_REF_INPUT:-${APP_REF_PAYLOAD:-}}"
           version_tag="${VERSION_TAG_INPUT:-${VERSION_TAG_PAYLOAD:-}}"
 
+          if [ -z "$app_ref" ]; then
+            app_ref="$(gh api "repos/$app_repository" --jq .default_branch)"
+          fi
+
+          app_sha="$(gh api "repos/$app_repository/commits/$app_ref" --jq .sha)"
+
           if [ -z "$version_tag" ]; then
-            echo "version_tag is required" >&2
-            exit 1
+            package_version="$(
+              gh api "repos/$app_repository/contents/package.json?ref=$app_sha" --jq .content |
+                base64 --decode |
+                jq -r '.version // empty'
+            )"
+            if [ -z "$package_version" ]; then
+              echo "Could not resolve package.json version from $app_repository@$app_sha" >&2
+              exit 1
+            fi
+            version_tag="$package_version"
           fi
           if [[ "$version_tag" != v* ]]; then
             version_tag="v$version_tag"
           fi
-
-          app_sha="$(gh api "repos/$app_repository/commits/$app_ref" --jq .sha)"
 
           {
             echo "app_repository=$app_repository"

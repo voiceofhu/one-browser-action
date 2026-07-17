@@ -25,9 +25,10 @@ runs the build.
 File: `.github/workflows/server.yml`
 
 This workflow is dispatched by the local `make deploy-server` command. It
-resolves the server revision, checks whether the matching GHCR image already
-exists, and only builds/deploys when the run is forced or the server commit has
-not been built yet.
+resolves immutable server and web revisions, checks whether the matching GHCR
+image already exists, and only rebuilds when that exact source pair is missing
+or the run is forced. A requested deploy still runs when the immutable image
+already exists.
 
 Triggers:
 
@@ -55,9 +56,12 @@ The workflow:
 
 Image tags pushed:
 
-- `sha-<server_sha>`
+- `sha-<server_sha>-web-<web_sha>`
 - an optional explicit version tag, for example `v26.709.1542`
 - `latest`
+
+Production deploys always use the combined immutable SHA tag rather than the
+optional version or `latest` aliases.
 
 ### App Release
 
@@ -179,6 +183,37 @@ deploy job runs here:
 - optional `DEPLOY_REMOTE_DIR`
 - optional `GHCR_USERNAME`
 - optional `GHCR_TOKEN`
+
+Optional server deploy variables:
+
+- `DEPLOY_EGRESS_ENDPOINT`, default `egress.aicbe.com:443`
+- `DEPLOY_EGRESS_CHECK=false` to explicitly skip the public TLS/ALPN smoke test
+
+## Production Server Prerequisites
+
+`/opt/one-browser` is provisioned once on the server and remains the persistent
+deployment directory. The workflow requires the directory and `.env` to exist;
+it stages and atomically replaces only `docker-compose.yml`. It uses `.env` and
+the mounted certificate files during the remote preflight, but never uploads,
+overwrites, prints, or copies their contents back to Actions. These paths remain
+server-owned:
+
+- `.env`
+- `.secrets/certbot/cloudflare.ini`
+- `certs/fullchain.pem` and `certs/privkey.pem`
+- `/etc/letsencrypt`
+- `/etc/nginx`
+
+When `TUNNEL_ENABLED=true`, the staged image verifies that `APP_SECRET` is at
+least 32 characters and that both mounted certificate files are readable by the
+runtime user before replacing the running service. After the container becomes
+healthy, the workflow verifies the public Egress certificate, hostname, and
+ALPN `h2` from the GitHub runner.
+
+Certbot renewal, its deploy hook, Cloudflare DNS credentials, and the Nginx
+main-context `stream` include are one-time host provisioning. They are not part
+of routine application releases. `egress.aicbe.com` must remain DNS only unless
+a compatible layer-4 service is introduced.
 
 ## Trigger Note
 

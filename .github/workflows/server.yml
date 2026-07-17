@@ -60,9 +60,10 @@ jobs:
       web_sha: ${{ steps.refs.outputs.web_sha }}
       image_name: ${{ steps.refs.outputs.image_name }}
       image_ref: ${{ steps.refs.outputs.image_ref }}
+      image_revision_tag: ${{ steps.refs.outputs.image_revision_tag }}
       force: ${{ steps.refs.outputs.force }}
       deploy: ${{ steps.refs.outputs.deploy }}
-      should_run: ${{ steps.plan.outputs.should_run }}
+      should_build: ${{ steps.plan.outputs.should_build }}
 
     steps:
       - name: Resolve refs
@@ -99,6 +100,7 @@ jobs:
 
           server_sha="$(gh api "repos/$server_repository/commits/$server_ref" --jq .sha)"
           web_sha="$(gh api "repos/$web_repository/commits/$web_ref" --jq .sha)"
+          image_revision_tag="sha-$server_sha-web-$web_sha"
           server_tag="${VERSION_TAG_INPUT:-}"
           if [ -n "$server_tag" ] && [[ "$server_tag" != v* ]]; then
             server_tag="v$server_tag"
@@ -113,6 +115,15 @@ jobs:
             *) deploy=false ;;
           esac
 
+          if [ "$deploy" = "true" ]; then
+            if [ "$server_repository" != "voiceofhu/one-browser-server" ] ||
+               [ "$web_repository" != "voiceofhu/one-browser-web" ] ||
+               [ "$image_name" != "voiceofhu/one-browser-server" ]; then
+              echo "Production deploy only accepts the trusted One Browser repositories and image." >&2
+              exit 1
+            fi
+          fi
+
           {
             echo "server_repository=$server_repository"
             echo "server_ref=$server_ref"
@@ -123,12 +134,14 @@ jobs:
             echo "web_sha=$web_sha"
             echo "image_name=$image_name"
             echo "image_ref=$REGISTRY/$image_name"
+            echo "image_revision_tag=$image_revision_tag"
             echo "force=$force"
             echo "deploy=$deploy"
           } >> "$GITHUB_OUTPUT"
 
           printf 'server %s -> %s\n' "$server_ref" "$server_sha"
           printf 'web    %s -> %s\n' "$web_ref" "$web_sha"
+          printf 'image  %s\n' "$image_revision_tag"
           printf 'tag    %s\n' "${server_tag:-none}"
 
       - name: Set up Docker Buildx
@@ -147,27 +160,34 @@ jobs:
         env:
           FORCE: ${{ steps.refs.outputs.force }}
           IMAGE_REF: ${{ steps.refs.outputs.image_ref }}
-          SERVER_SHA: ${{ steps.refs.outputs.server_sha }}
+          IMAGE_REVISION_TAG: ${{ steps.refs.outputs.image_revision_tag }}
+          SERVER_TAG: ${{ steps.refs.outputs.server_tag }}
         run: |
           set -euo pipefail
 
-          if docker buildx imagetools inspect "$IMAGE_REF:sha-$SERVER_SHA" >/dev/null 2>&1; then
+          if docker buildx imagetools inspect "$IMAGE_REF:$IMAGE_REVISION_TAG" >/dev/null 2>&1; then
             image_exists=1
           else
             image_exists=0
           fi
 
-          if [ "$image_exists" = "1" ] && [ "${FORCE:-false}" != "true" ]; then
-            echo "should_run=false" >> "$GITHUB_OUTPUT"
-            echo "Image $IMAGE_REF:sha-$SERVER_SHA already exists; skipping."
+          tag_exists=1
+          if [ -n "$SERVER_TAG" ] &&
+             ! docker buildx imagetools inspect "$IMAGE_REF:$SERVER_TAG" >/dev/null 2>&1; then
+            tag_exists=0
+          fi
+
+          if [ "$image_exists" = "1" ] && [ "$tag_exists" = "1" ] && [ "${FORCE:-false}" != "true" ]; then
+            echo "should_build=false" >> "$GITHUB_OUTPUT"
+            echo "Image $IMAGE_REF:$IMAGE_REVISION_TAG already exists; skipping build."
           else
-            echo "should_run=true" >> "$GITHUB_OUTPUT"
+            echo "should_build=true" >> "$GITHUB_OUTPUT"
           fi
 
   frontend:
     name: Build web dist
     needs: resolve
-    if: needs.resolve.outputs.should_run == 'true'
+    if: needs.resolve.outputs.should_build == 'true'
     runs-on: ubuntu-latest
 
     steps:
@@ -185,27 +205,11 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: ${{ needs.resolve.outputs.web_repository }}
-          ref: ${{ needs.resolve.outputs.web_ref }}
+          ref: ${{ needs.resolve.outputs.web_sha }}
           path: server/${{ env.WEB_WORKDIR }}
           token: ${{ secrets.ONE_BROWSER_ACTION_TOKEN || github.token }}
           clean: true
           fetch-depth: 1
-
-      - name: Refresh web branch
-        shell: bash
-        env:
-          WEB_REF: ${{ needs.resolve.outputs.web_ref }}
-          WEB_PATH: server/${{ env.WEB_WORKDIR }}
-        run: |
-          set -euo pipefail
-
-          if git -C "$WEB_PATH" ls-remote --exit-code --heads origin "refs/heads/$WEB_REF" >/dev/null 2>&1; then
-            git -C "$WEB_PATH" fetch --no-tags --prune --depth=1 origin "+refs/heads/$WEB_REF:refs/remotes/origin/$WEB_REF"
-            git -C "$WEB_PATH" reset --hard "refs/remotes/origin/$WEB_REF"
-          fi
-
-          git -C "$WEB_PATH" clean -ffdx
-          git -C "$WEB_PATH" rev-parse HEAD
 
       - name: Set up Node
         uses: actions/setup-node@v4
@@ -241,7 +245,7 @@ jobs:
     needs:
       - resolve
       - frontend
-    if: needs.resolve.outputs.should_run == 'true'
+    if: needs.resolve.outputs.should_build == 'true'
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
@@ -276,13 +280,13 @@ jobs:
         shell: bash
         env:
           IMAGE: ${{ needs.resolve.outputs.image_ref }}
-          SERVER_SHA: ${{ needs.resolve.outputs.server_sha }}
+          IMAGE_REVISION_TAG: ${{ needs.resolve.outputs.image_revision_tag }}
           SERVER_TAG: ${{ needs.resolve.outputs.server_tag }}
           SUFFIX: ${{ matrix.suffix }}
         run: |
           {
             echo 'tags<<EOF'
-            printf '%s\n' "$IMAGE:sha-$SERVER_SHA-$SUFFIX"
+            printf '%s\n' "$IMAGE:$IMAGE_REVISION_TAG-$SUFFIX"
             if [ -n "$SERVER_TAG" ]; then
               printf '%s\n' "$IMAGE:$SERVER_TAG-$SUFFIX"
             fi
@@ -323,7 +327,7 @@ jobs:
     needs:
       - resolve
       - build
-    if: needs.resolve.outputs.should_run == 'true'
+    if: needs.resolve.outputs.should_build == 'true'
     runs-on: ubuntu-latest
 
     steps:
@@ -341,13 +345,13 @@ jobs:
         shell: bash
         env:
           IMAGE: ${{ needs.resolve.outputs.image_ref }}
-          SERVER_SHA: ${{ needs.resolve.outputs.server_sha }}
+          IMAGE_REVISION_TAG: ${{ needs.resolve.outputs.image_revision_tag }}
           SERVER_TAG: ${{ needs.resolve.outputs.server_tag }}
         run: |
           docker buildx imagetools create \
-            -t "$IMAGE:sha-$SERVER_SHA" \
-            "$IMAGE:sha-$SERVER_SHA-amd64" \
-            "$IMAGE:sha-$SERVER_SHA-arm64"
+            -t "$IMAGE:$IMAGE_REVISION_TAG" \
+            "$IMAGE:$IMAGE_REVISION_TAG-amd64" \
+            "$IMAGE:$IMAGE_REVISION_TAG-arm64"
 
           if [ -n "$SERVER_TAG" ]; then
             docker buildx imagetools create \
@@ -366,8 +370,14 @@ jobs:
     needs:
       - resolve
       - manifest
-    if: needs.resolve.outputs.should_run == 'true' && needs.resolve.outputs.deploy == 'true'
+    if: >-
+      always() &&
+      !cancelled() &&
+      needs.resolve.result == 'success' &&
+      needs.resolve.outputs.deploy == 'true' &&
+      (needs.resolve.outputs.should_build == 'false' || needs.manifest.result == 'success')
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     concurrency:
       group: one-browser-production-deploy
       cancel-in-progress: false
@@ -388,14 +398,9 @@ jobs:
         shell: bash
         env:
           IMAGE: ${{ needs.resolve.outputs.image_ref }}
-          SERVER_SHA: ${{ needs.resolve.outputs.server_sha }}
-          SERVER_TAG: ${{ needs.resolve.outputs.server_tag }}
+          IMAGE_REVISION_TAG: ${{ needs.resolve.outputs.image_revision_tag }}
         run: |
-          if [ -n "$SERVER_TAG" ]; then
-            echo "image=$IMAGE:$SERVER_TAG" >> "$GITHUB_OUTPUT"
-          else
-            echo "image=$IMAGE:sha-$SERVER_SHA" >> "$GITHUB_OUTPUT"
-          fi
+          echo "image=$IMAGE:$IMAGE_REVISION_TAG" >> "$GITHUB_OUTPUT"
 
       - name: Validate deployment secrets
         shell: bash
@@ -446,3 +451,36 @@ jobs:
           LOG_TAIL: ${{ vars.DEPLOY_LOG_TAIL || '120' }}
           LOG_FOLLOW_SECONDS: ${{ vars.DEPLOY_LOG_FOLLOW_SECONDS || '5' }}
         run: bash .github/scripts/deploy-docker-compose.sh
+
+      - name: Verify Egress TLS endpoint
+        if: ${{ vars.DEPLOY_EGRESS_CHECK != 'false' }}
+        shell: bash
+        env:
+          EGRESS_ENDPOINT: ${{ vars.DEPLOY_EGRESS_ENDPOINT || 'egress.aicbe.com:443' }}
+        run: |
+          set -euo pipefail
+
+          if [[ ! "$EGRESS_ENDPOINT" =~ ^([A-Za-z0-9.-]+):([0-9]+)$ ]]; then
+            echo "DEPLOY_EGRESS_ENDPOINT must use host:port format" >&2
+            exit 1
+          fi
+          host="${BASH_REMATCH[1]}"
+
+          tls_output="$(
+            timeout 20s openssl s_client \
+              -connect "$EGRESS_ENDPOINT" \
+              -servername "$host" \
+              -alpn h2 \
+              -verify_hostname "$host" \
+              -verify_return_error \
+              </dev/null 2>&1 || true
+          )"
+
+          if ! grep -Fq 'ALPN protocol: h2' <<<"$tls_output" ||
+             ! grep -Fq 'Verify return code: 0 (ok)' <<<"$tls_output"; then
+            printf '%s\n' "$tls_output" >&2
+            echo "Egress TLS verification failed for $EGRESS_ENDPOINT" >&2
+            exit 1
+          fi
+
+          echo "Egress TLS verified: $EGRESS_ENDPOINT (ALPN h2)"

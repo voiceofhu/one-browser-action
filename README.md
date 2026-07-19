@@ -239,7 +239,11 @@ Optional Egress deploy variables:
 - `DEPLOY_EGRESS_ENDPOINT`, default `egress.aicbe.com:27600`
 - `DEPLOY_EGRESS_CHECK=false` to skip the public TLS/H2 protocol readiness check
 - `DEPLOY_EGRESS_LOG_TAIL` and `DEPLOY_EGRESS_LOG_FOLLOW_SECONDS`
-- shared `DEPLOY_USE_SUDO=1` when the SSH user requires sudo for Docker
+- shared `DEPLOY_USE_SUDO=0` is recommended when the SSH user belongs to the
+  Docker group; the user must also be able to write the deployment directory
+  and read its `.env`
+- `DEPLOY_USE_SUDO=1` still requires a writable deployment directory and an
+  exact passwordless sudo rule for the script's `sudo -n env ... docker`
 
 `DEPLOY_CONTROL_NETWORK` is shared by the Server and Egress workflows and
 defaults to `one-browser-control`; both deployments must use the same value.
@@ -293,6 +297,10 @@ commit-addressed image, waits for container health, and then the Action checks t
 public H2 protocol signature. A trusted certificate by itself is insufficient:
 the `407` Bearer response proves public TCP port `27600` reached the Egress
 service.
+
+With the recommended `DEPLOY_USE_SUDO=0`, provision the directory as a setgid,
+group-writable directory owned by the deployment group, and make `.env`
+group-readable but not group-writable. Keep `certs/` owned by `root:65532`.
 
 Certbot renewal, its deploy hook, the DNS-only A record, and inbound TCP `27600`
 firewall policy remain host provisioning. Routine Egress releases do not edit

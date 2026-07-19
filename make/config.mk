@@ -13,6 +13,9 @@ IMAGE_NAME ?= voiceofhu/one-browser-server
 FORCE ?= false
 DEPLOY ?= true
 
+EGRESS_REPOSITORY ?= voiceofhu/one-browser-egress
+EGRESS_REF ?=
+
 APP_REPOSITORY ?= voiceofhu/one-browser-app
 APP_REF ?=
 

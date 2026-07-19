@@ -1,0 +1,270 @@
+name: Egress Deploy
+
+on:
+  workflow_dispatch:
+    inputs:
+      egress_ref:
+        description: one-browser-egress branch, tag, or commit. Empty means the default branch.
+        required: false
+      deploy:
+        description: Deploy after publishing or locating the image
+        type: boolean
+        required: false
+        default: true
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  REGISTRY: ghcr.io
+  EGRESS_REPOSITORY: voiceofhu/one-browser-egress
+  EGRESS_IMAGE_NAME: voiceofhu/one-browser-egress
+
+jobs:
+  resolve:
+    name: Resolve Egress revision
+    runs-on: ubuntu-latest
+    outputs:
+      egress_repository: ${{ steps.refs.outputs.egress_repository }}
+      egress_sha: ${{ steps.refs.outputs.egress_sha }}
+      image_ref: ${{ steps.refs.outputs.image_ref }}
+      image_revision_tag: ${{ steps.refs.outputs.image_revision_tag }}
+      image_build_tag: ${{ steps.refs.outputs.image_build_tag }}
+      deploy: ${{ steps.refs.outputs.deploy }}
+      should_build: ${{ steps.plan.outputs.should_build }}
+
+    steps:
+      - name: Checkout workflow scripts
+        uses: actions/checkout@v4
+        with:
+          path: action
+          clean: true
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Resolve source ref
+        id: refs
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.ONE_BROWSER_ACTION_TOKEN || github.token }}
+          EGRESS_REPOSITORY: ${{ env.EGRESS_REPOSITORY }}
+          EGRESS_REF_INPUT: ${{ inputs.egress_ref }}
+          IMAGE_NAME: ${{ env.EGRESS_IMAGE_NAME }}
+          DEPLOY_INPUT: ${{ inputs.deploy }}
+        run: bash action/.github/scripts/resolve-egress-release.sh
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ secrets.GHCR_USERNAME || github.actor }}
+          password: ${{ secrets.GHCR_TOKEN || secrets.ONE_BROWSER_ACTION_TOKEN || github.token }}
+
+      - name: Decide whether to build
+        id: plan
+        shell: bash
+        env:
+          IMAGE_REF: ${{ steps.refs.outputs.image_ref }}
+          IMAGE_REVISION_TAG: ${{ steps.refs.outputs.image_revision_tag }}
+        run: |
+          set -Eeuo pipefail
+          if bash action/.github/scripts/inspect-egress-image.sh \
+            "$IMAGE_REF:$IMAGE_REVISION_TAG"; then
+            echo "should_build=false" >> "$GITHUB_OUTPUT"
+            echo "Using existing image $IMAGE_REF:$IMAGE_REVISION_TAG"
+          else
+            status=$?
+            if [ "$status" -ne 2 ]; then
+              exit "$status"
+            fi
+            echo "should_build=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  build:
+    name: Build ${{ matrix.suffix }} image
+    needs: resolve
+    if: needs.resolve.outputs.should_build == 'true'
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            runner: ubuntu-latest
+            suffix: amd64
+          - platform: linux/arm64
+            runner: ubuntu-24.04-arm
+            suffix: arm64
+
+    steps:
+      - name: Checkout Egress
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ needs.resolve.outputs.egress_repository }}
+          ref: ${{ needs.resolve.outputs.egress_sha }}
+          path: egress
+          token: ${{ secrets.ONE_BROWSER_ACTION_TOKEN || github.token }}
+          clean: true
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ secrets.GHCR_USERNAME || github.actor }}
+          password: ${{ secrets.GHCR_TOKEN || secrets.ONE_BROWSER_ACTION_TOKEN || github.token }}
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v6
+        with:
+          context: egress
+          file: egress/deploy/docker/Dockerfile
+          platforms: ${{ matrix.platform }}
+          push: true
+          tags: ${{ needs.resolve.outputs.image_ref }}:${{ needs.resolve.outputs.image_build_tag }}-${{ matrix.suffix }}
+          cache-from: type=gha,scope=one-browser-egress-${{ matrix.suffix }}
+          cache-to: type=gha,scope=one-browser-egress-${{ matrix.suffix }},mode=max
+
+  publish:
+    name: Publish Egress manifest
+    needs:
+      - resolve
+      - build
+    if: >-
+      always() &&
+      !cancelled() &&
+      needs.resolve.result == 'success' &&
+      (needs.resolve.outputs.should_build == 'false' || needs.build.result == 'success')
+    runs-on: ubuntu-latest
+    concurrency:
+      group: one-browser-egress-manifest
+      cancel-in-progress: false
+      queue: max
+
+    steps:
+      - name: Checkout workflow scripts
+        uses: actions/checkout@v4
+        with:
+          path: action
+          clean: true
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ secrets.GHCR_USERNAME || github.actor }}
+          password: ${{ secrets.GHCR_TOKEN || secrets.ONE_BROWSER_ACTION_TOKEN || github.token }}
+
+      - name: Publish multi-platform image
+        shell: bash
+        env:
+          IMAGE: ${{ needs.resolve.outputs.image_ref }}
+          IMAGE_REVISION_TAG: ${{ needs.resolve.outputs.image_revision_tag }}
+          IMAGE_BUILD_TAG: ${{ needs.resolve.outputs.image_build_tag }}
+          SHOULD_BUILD: ${{ needs.resolve.outputs.should_build }}
+        run: bash action/.github/scripts/publish-egress-manifests.sh
+
+  deploy:
+    name: Deploy Egress
+    needs:
+      - resolve
+      - publish
+    if: >-
+      always() &&
+      !cancelled() &&
+      needs.resolve.result == 'success' &&
+      needs.resolve.outputs.deploy == 'true' &&
+      needs.publish.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    concurrency:
+      group: one-browser-egress-production-deploy
+      cancel-in-progress: false
+      queue: max
+
+    steps:
+      - name: Checkout Egress
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ needs.resolve.outputs.egress_repository }}
+          ref: ${{ needs.resolve.outputs.egress_sha }}
+          path: egress
+          token: ${{ secrets.ONE_BROWSER_ACTION_TOKEN || github.token }}
+          clean: true
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Checkout workflow scripts
+        uses: actions/checkout@v4
+        with:
+          path: action
+          clean: true
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Validate deployment secrets
+        shell: bash
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+        run: |
+          missing=0
+          for name in DEPLOY_HOST DEPLOY_USER DEPLOY_SSH_KEY DEPLOY_KNOWN_HOSTS; do
+            if [ -z "$(eval "printf '%s' \"\$$name\"")" ]; then
+              echo "$name is required" >&2
+              missing=1
+            fi
+          done
+          exit "$missing"
+
+      - name: Configure SSH
+        shell: bash
+        working-directory: egress
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_PORT: ${{ secrets.DEPLOY_PORT || '22' }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+        run: bash .github/scripts/configure-ssh.sh
+
+      - name: Deploy image with Docker Compose
+        shell: bash
+        working-directory: egress
+        env:
+          SSH_HOST: one-browser-deploy
+          REMOTE_DIR: /opt/one-browser-egress
+          DOCKER_IMAGE: ${{ needs.resolve.outputs.image_ref }}:${{ needs.resolve.outputs.image_revision_tag }}
+          COMPOSE_PROJECT_NAME: one-browser-egress
+          COMPOSE_SERVICE_NAME: egress
+          CONTAINER_NAME: one-browser-egress
+          CONTROL_NETWORK: ${{ vars.DEPLOY_CONTROL_NETWORK || 'one-browser-control' }}
+          USE_SUDO: ${{ vars.DEPLOY_USE_SUDO || '0' }}
+          PULL_IMAGE: "1"
+          RUN_HEALTHCHECK: "1"
+          SHOW_LOGS: "1"
+          LOG_TAIL: ${{ vars.DEPLOY_EGRESS_LOG_TAIL || '120' }}
+          LOG_FOLLOW_SECONDS: ${{ vars.DEPLOY_EGRESS_LOG_FOLLOW_SECONDS || '5' }}
+        run: bash .github/scripts/deploy-docker-compose.sh
+
+      - name: Verify public Egress endpoint
+        if: ${{ vars.DEPLOY_EGRESS_CHECK != 'false' }}
+        shell: bash
+        env:
+          EGRESS_ENDPOINT: ${{ vars.DEPLOY_EGRESS_ENDPOINT || 'egress.aicbe.com:27600' }}
+        run: node action/.github/scripts/verify-egress.mjs

@@ -6,6 +6,7 @@ This repository owns the release/deploy workflows. The source repositories can
 stay private:
 
 - `voiceofhu/one-browser-server`
+- `voiceofhu/one-browser-egress`
 - `voiceofhu/one-browser-app`
 - `voiceofhu/one-browser-web`
 
@@ -13,10 +14,10 @@ stay private:
 
 Keep source repositories private, but run the heavy CI/CD implementation here.
 The source repositories do not need tag-trigger workflows. Their local
-`make push-tag` targets push the tag first, then call `make deploy-server` or
-`make deploy-app` in this repository with the pushed version and exact source
-commit SHA. This repository then checks out that immutable source revision and
-runs the build.
+`make push-tag` targets push the tag first, then call `make deploy-server`,
+`make deploy-egress`, or `make deploy-app` in this repository with the pushed
+version and exact source commit SHA. This repository then checks out that
+immutable source revision and runs the build.
 
 ## Workflows
 
@@ -63,6 +64,34 @@ Image tags pushed:
 Production deploys always use the combined immutable SHA tag rather than the
 optional version or `latest` aliases.
 
+### Egress Deploy
+
+File: `.github/workflows/egress.yml`
+
+This workflow builds and deploys the independently released Egress data plane.
+It resolves an immutable `one-browser-egress` source commit, reuses its existing
+GHCR image when available, and can still deploy when no build was needed.
+
+Inputs:
+
+- `egress_ref`: branch, tag, or commit; empty means the default branch
+- `deploy`: deploy after publishing or locating the image
+
+The source and image are deliberately fixed to the trusted
+`voiceofhu/one-browser-egress` repository. The two architecture jobs publish
+run-specific staging tags, so concurrent runs cannot mix their amd64 and arm64
+artifacts. A queued manifest job validates or publishes:
+
+- `sha-<egress_sha>` containing both `linux/amd64` and `linux/arm64`.
+
+The workflow never force-overwrites this commit-addressed tag and fails closed
+when registry inspection fails for any reason other than a confirmed missing
+manifest. Production deploys use `sha-<egress_sha>`. The Egress source
+repository owns its Dockerfile, Compose file, SSH setup, and rollback-aware
+deployment scripts. After deployment, this workflow verifies the public
+certificate and ALPN `h2`, then requires the unauthenticated protocol response
+to be `407 Proxy Authentication Required` with a Bearer challenge.
+
 ### App Release
 
 File: `.github/workflows/app.yml`
@@ -106,8 +135,9 @@ make check-token
 ```
 
 For a fine-grained personal access token, select the `voiceofhu` organization
-and allow repository access to `one-browser-action`, `one-browser-server`, and
-`one-browser-app`. It needs `Contents: read` for source repositories and
+and allow repository access to `one-browser-action`, `one-browser-server`,
+`one-browser-egress`, `one-browser-web`, and `one-browser-app`. It needs
+`Contents: read` for source repositories and
 `Actions: read/write` for `one-browser-action`. A classic token should have the
 `repo` scope.
 
@@ -118,9 +148,10 @@ make deploy-server
 ```
 
 By default, this builds the latest commit on
-`voiceofhu/one-browser-server`'s default branch. It publishes the immutable
-`sha-<commit>` tag plus `latest`; pass `TAG` only when a versioned image tag is
-also needed.
+`voiceofhu/one-browser-server`'s default branch together with the selected web
+commit. It publishes the combined immutable
+`sha-<server_sha>-web-<web_sha>` tag plus `latest`; pass `TAG` only when a
+versioned image tag is also needed.
 
 Common server options:
 
@@ -136,6 +167,25 @@ Build without deploying:
 
 ```bash
 make deploy-server TAG=v26.709.1542 DEPLOY=false
+```
+
+Trigger an Egress release and production deploy:
+
+```bash
+make deploy-egress
+```
+
+Common Egress options:
+
+```bash
+make deploy-egress \
+  EGRESS_REF=v26.709.1542
+```
+
+Build and publish the commit-addressed image without deployment:
+
+```bash
+make deploy-egress DEPLOY=false
 ```
 
 Trigger an app release:
@@ -172,48 +222,85 @@ source repositories and publish its App Releases:
 | --- | --- |
 | `ONE_BROWSER_ACTION_TOKEN` | PAT with source repository read access and `Contents: read/write` on `one-browser-action`. |
 
-Server deploy secrets now live in this public action repository because the
-deploy job runs here:
+Server and Egress deploy secrets live in this public action repository because
+the deploy jobs run here:
 
 - `DEPLOY_HOST`
 - `DEPLOY_USER`
 - `DEPLOY_SSH_KEY`
 - `DEPLOY_KNOWN_HOSTS`
 - optional `DEPLOY_PORT`
-- optional `DEPLOY_REMOTE_DIR`
+- optional Server-only `DEPLOY_REMOTE_DIR`
 - optional `GHCR_USERNAME`
 - optional `GHCR_TOKEN`
 
-Optional server deploy variables:
+Optional Egress deploy variables:
 
-- `DEPLOY_EGRESS_ENDPOINT`, default `egress.aicbe.com:443`
-- `DEPLOY_EGRESS_CHECK=false` to explicitly skip the public TLS/ALPN smoke test
+- `DEPLOY_EGRESS_ENDPOINT`, default `egress.aicbe.com:27600`
+- `DEPLOY_EGRESS_CHECK=false` to skip the public TLS/H2 protocol readiness check
+- `DEPLOY_EGRESS_LOG_TAIL` and `DEPLOY_EGRESS_LOG_FOLLOW_SECONDS`
+- shared `DEPLOY_USE_SUDO=1` when the SSH user requires sudo for Docker
+
+`DEPLOY_CONTROL_NETWORK` is shared by the Server and Egress workflows and
+defaults to `one-browser-control`; both deployments must use the same value.
 
 ## Production Server Prerequisites
 
 `/opt/one-browser` is provisioned once on the server and remains the persistent
 deployment directory. The workflow requires the directory and `.env` to exist;
-it stages and atomically replaces only `docker-compose.yml`. It uses `.env` and
-the mounted certificate files during the remote preflight, but never uploads,
-overwrites, prints, or copies their contents back to Actions. These paths remain
-server-owned:
+it stages and atomically replaces only `docker-compose.yml`. It uses `.env`
+during the remote preflight, but never uploads, overwrites, prints, or copies
+its contents back to Actions. Database and Redis configuration remain
+server-owned.
 
-- `.env`
-- `.secrets/certbot/cloudflare.ini`
-- `certs/fullchain.pem` and `certs/privkey.pem`
-- `/etc/letsencrypt`
-- `/etc/nginx`
+Server deployment does not manage the Egress listener, certificates, firewall,
+or public Egress readiness. Those belong to the independent Egress deployment.
 
-When `TUNNEL_ENABLED=true`, the staged image verifies that `APP_SECRET` is at
-least 32 characters and that both mounted certificate files are readable by the
-runtime user before replacing the running service. After the container becomes
-healthy, the workflow verifies the public Egress certificate, hostname, and
-ALPN `h2` from the GitHub runner.
+## Production Egress Prerequisites
 
-Certbot renewal, its deploy hook, Cloudflare DNS credentials, and the Nginx
-main-context `stream` include are one-time host provisioning. They are not part
-of routine application releases. `egress.aicbe.com` must remain DNS only unless
-a compatible layer-4 service is introduced.
+Provision this persistent layout once:
+
+```text
+/opt/one-browser-egress/
+  .env
+  docker-compose.yml
+  certs/fullchain.pem
+  certs/privkey.pem
+```
+
+The Egress process requires `EGRESS_CONTROL_URL` and a dedicated
+`EGRESS_CONTROL_TOKEN` of at least 32 bytes; the production Compose environment
+also publishes TCP port `27600` explicitly. Store the same token in the Server
+`.env`; never reuse `APP_SECRET` or `PROXY_CREDENTIAL_KEY`. The Server and Egress
+Compose projects must join the external `one-browser-control` Docker network.
+Create that network once before either service deploys:
+
+```dotenv
+EGRESS_CONTROL_URL=http://one-browser-server:27512
+EGRESS_CONTROL_TOKEN=<same independent random value used by Server>
+EGRESS_PUBLISH_ADDR=0.0.0.0
+EGRESS_HOST_PORT=27600
+```
+
+```bash
+docker network inspect one-browser-control >/dev/null 2>&1 || \
+  docker network create one-browser-control
+```
+
+The Egress workflow requires `/opt/one-browser-egress` and its `.env` to exist.
+Its source-owned deployment script preserves `.env` and `certs/`, deploys the
+commit-addressed image, waits for container health, and then the Action checks the
+public H2 protocol signature. A trusted certificate by itself is insufficient:
+the `407` Bearer response proves public TCP port `27600` reached the Egress
+service.
+
+Certbot renewal, its deploy hook, the DNS-only A record, and inbound TCP `27600`
+firewall policy remain host provisioning. Routine Egress releases do not edit
+DNS, firewall rules, existing Nginx `443` sites, or issue certificates.
+`egress.aicbe.com` must remain DNS only unless a compatible layer-4 service is
+introduced. The workflow's public TLS/H2 check happens after the container
+deployment; it reports a failed deployment but intentionally does not rewrite
+host network policy or roll the container back for a public-routing error.
 
 ## Trigger Note
 

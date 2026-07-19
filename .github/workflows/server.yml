@@ -442,6 +442,7 @@ jobs:
           CONTAINER_NAME: ${{ vars.DEPLOY_CONTAINER_NAME || 'one-browser-server' }}
           DOCKER_NETWORK: ${{ vars.DEPLOY_DOCKER_NETWORK || 'db-networks' }}
           DOCKER_NETWORK_EXTERNAL: ${{ vars.DEPLOY_DOCKER_NETWORK_EXTERNAL || 'true' }}
+          EGRESS_CONTROL_NETWORK: ${{ vars.DEPLOY_CONTROL_NETWORK || 'one-browser-control' }}
           POSTGRES_HOST: ${{ vars.DEPLOY_POSTGRES_HOST || 'postgres' }}
           REDIS_HOST: ${{ vars.DEPLOY_REDIS_HOST || 'redis' }}
           USE_SUDO: ${{ vars.DEPLOY_USE_SUDO || '0' }}
@@ -451,36 +452,3 @@ jobs:
           LOG_TAIL: ${{ vars.DEPLOY_LOG_TAIL || '120' }}
           LOG_FOLLOW_SECONDS: ${{ vars.DEPLOY_LOG_FOLLOW_SECONDS || '5' }}
         run: bash .github/scripts/deploy-docker-compose.sh
-
-      - name: Verify Egress TLS endpoint
-        if: ${{ vars.DEPLOY_EGRESS_CHECK != 'false' }}
-        shell: bash
-        env:
-          EGRESS_ENDPOINT: ${{ vars.DEPLOY_EGRESS_ENDPOINT || 'egress.aicbe.com:443' }}
-        run: |
-          set -euo pipefail
-
-          if [[ ! "$EGRESS_ENDPOINT" =~ ^([A-Za-z0-9.-]+):([0-9]+)$ ]]; then
-            echo "DEPLOY_EGRESS_ENDPOINT must use host:port format" >&2
-            exit 1
-          fi
-          host="${BASH_REMATCH[1]}"
-
-          tls_output="$(
-            timeout 20s openssl s_client \
-              -connect "$EGRESS_ENDPOINT" \
-              -servername "$host" \
-              -alpn h2 \
-              -verify_hostname "$host" \
-              -verify_return_error \
-              </dev/null 2>&1 || true
-          )"
-
-          if ! grep -Fq 'ALPN protocol: h2' <<<"$tls_output" ||
-             ! grep -Fq 'Verify return code: 0 (ok)' <<<"$tls_output"; then
-            printf '%s\n' "$tls_output" >&2
-            echo "Egress TLS verification failed for $EGRESS_ENDPOINT" >&2
-            exit 1
-          fi
-
-          echo "Egress TLS verified: $EGRESS_ENDPOINT (ALPN h2)"

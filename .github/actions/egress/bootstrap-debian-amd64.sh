@@ -12,6 +12,8 @@ readonly DEPLOY_DIR=/opt/one-browser-egress
 readonly CERT_DIR="$DEPLOY_DIR/certs"
 readonly CONTROL_NETWORK=one-browser-control
 readonly CONTAINER_NAME=one-browser-egress
+readonly ACME_WEBROOT=/var/www/one-browser-egress-acme
+readonly NGINX_ACME_CONFIG=/etc/nginx/conf.d/one-browser-egress-acme.conf
 
 node_id=''
 domain=''
@@ -33,7 +35,7 @@ Usage:
 Server 控制地址固定为 https://browser.aicbe.com。节点控制 Token 由脚本自动生成，
 不会显示在终端。
 
-脚本安装 Docker Engine、Compose、Certbot 和 OpenSSH，创建 gh-deploy，准备
+脚本安装 Docker Engine、Compose、Nginx、Certbot 和 OpenSSH，创建 gh-deploy，准备
 /opt/one-browser-egress、.env、TLS 证书和续期配置。它不会拉取镜像或启动
 Egress；第一次部署仍由 GitHub Action 完成。
 USAGE
@@ -210,7 +212,7 @@ install_docker() {
     ca-certificates \
     certbot \
     curl \
-    iproute2 \
+    nginx \
     openssh-client \
     openssh-server \
     openssl
@@ -243,6 +245,7 @@ EOF
     docker-compose-plugin
 
   systemctl enable --now docker.service
+  systemctl enable --now nginx.service
   systemctl enable --now ssh.service
   ssh-keygen -A
   docker version >/dev/null
@@ -441,27 +444,88 @@ certificate_pair_is_valid() {
   [[ "${certificate_public_key%% *}" == "${private_public_key%% *}" ]]
 }
 
-port_80_is_in_use() {
-  ss -H -ltn 'sport = :80' | grep -q .
+configure_nginx_acme_webroot() {
+  local config_temp
+  local previous_config=''
+
+  command -v nginx >/dev/null 2>&1 || \
+    die 'TCP port 80 is occupied, but the Nginx command is unavailable'
+  [[ -d /etc/nginx/conf.d ]] || \
+    die '/etc/nginx/conf.d is unavailable; cannot install the ACME virtual host'
+
+  step "Configuring the Nginx ACME virtual host for $domain"
+  install -d -m 0755 "$ACME_WEBROOT/.well-known/acme-challenge"
+  new_temp_file config_temp
+  cat > "$config_temp" <<EOF
+server {
+    listen 80;
+    listen [::]:80;
+    server_name $domain;
+
+    location ^~ /.well-known/acme-challenge/ {
+        root $ACME_WEBROOT;
+        default_type text/plain;
+        try_files \$uri =404;
+    }
+
+    location / {
+        return 404;
+    }
+}
+EOF
+
+  if [[ -f "$NGINX_ACME_CONFIG" ]]; then
+    new_temp_file previous_config
+    cp -p "$NGINX_ACME_CONFIG" "$previous_config"
+  fi
+  install -m 0644 -o root -g root "$config_temp" "$NGINX_ACME_CONFIG"
+
+  if ! nginx -t; then
+    if [[ -n "$previous_config" ]]; then
+      cp -p "$previous_config" "$NGINX_ACME_CONFIG"
+    else
+      rm -f -- "$NGINX_ACME_CONFIG"
+    fi
+    nginx -t >/dev/null 2>&1 || true
+    die 'the generated Nginx ACME virtual host failed validation; the previous configuration was restored'
+  fi
+  if ! nginx -T 2>&1 |
+     grep -F "configuration file $NGINX_ACME_CONFIG:" >/dev/null; then
+    if [[ -n "$previous_config" ]]; then
+      cp -p "$previous_config" "$NGINX_ACME_CONFIG"
+    else
+      rm -f -- "$NGINX_ACME_CONFIG"
+    fi
+    die '/etc/nginx/conf.d/*.conf is not included by the active Nginx configuration'
+  fi
+
+  systemctl reload nginx.service
 }
 
 install_certificate() {
   local lineage="/etc/letsencrypt/live/$domain"
+  local renewal_config="/etc/letsencrypt/renewal/$domain.conf"
+  local -a certbot_args=(
+    certonly
+    --webroot
+    --webroot-path "$ACME_WEBROOT"
+    --non-interactive
+    --agree-tos
+    --email "$certbot_email"
+    --cert-name "$domain"
+    -d "$domain"
+  )
 
   step "Issuing or reusing the TLS certificate for $domain"
+  configure_nginx_acme_webroot
   if ! certificate_pair_is_valid "$lineage/fullchain.pem" "$lineage/privkey.pem" "$domain"; then
-    if port_80_is_in_use; then
-      ss -lntp 'sport = :80' >&2 || true
-      die 'TCP port 80 is already in use; free it or issue the certificate with a compatible Certbot method before rerunning'
-    fi
-    certbot certonly \
-      --standalone \
-      --non-interactive \
-      --agree-tos \
-      --email "$certbot_email" \
-      --cert-name "$domain" \
-      --keep-until-expiring \
-      -d "$domain"
+    certbot "${certbot_args[@]}"
+  elif ! grep -Eq \
+    '^[[:space:]]*authenticator[[:space:]]*=[[:space:]]*webroot[[:space:]]*$' \
+    "$renewal_config" 2>/dev/null; then
+    printf 'Migrating the existing certificate renewal method to Nginx webroot.\n'
+    certbot_args+=(--force-renewal)
+    certbot "${certbot_args[@]}"
   fi
 
   certificate_pair_is_valid "$lineage/fullchain.pem" "$lineage/privkey.pem" "$domain" || \

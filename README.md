@@ -391,9 +391,11 @@ Compose file, but intentionally does not rewrite host DNS or firewall policy.
 
 For a fresh Debian amd64 host, use
 `.github/actions/egress/bootstrap-debian-amd64.sh`. It installs Docker Engine,
-Compose, Certbot, and OpenSSH; creates `gh-deploy`; prepares the persistent
-directory, `.env`, public certificate, and renewal hook; and leaves the first
-container deployment to this Action. Run it without configuration arguments:
+Compose, Nginx, Certbot, and OpenSSH; creates `gh-deploy`; prepares the
+persistent directory, `.env`, public certificate, and renewal hook; and leaves
+the first container deployment to this Action. Certificate issuance always
+uses a domain-specific Nginx webroot virtual host, so existing Nginx websites
+remain on the same listener. Run it without configuration arguments:
 
 ```bash
 sudo bash .github/actions/egress/bootstrap-debian-amd64.sh

@@ -64,7 +64,7 @@ Workflow Dispatch API，不会传给 Egress 容器。
 全新的 Debian amd64 服务器统一使用
 `.github/actions/egress/bootstrap-debian-amd64.sh` 初始化。脚本负责：
 
-- 安装 Docker 官方版本、Compose plugin、Certbot 和 OpenSSH；
+- 安装 Docker 官方版本、Compose plugin、Nginx、Certbot 和 OpenSSH；
 - 创建锁定密码的 `gh-deploy`，加入 `docker` 与 `one-browser-deploy`；
 - 创建 `/opt/one-browser-egress`、受保护的 `.env` 和证书目录；
 - 为 DNS-only 的 Egress 域名签发证书并安装 Certbot 续期 hook；
@@ -95,9 +95,12 @@ cat ~/.ssh/egress-1-gh-deploy.pub
 
 1. 将 `egress-1.aicbe.com` 的 A 记录指向服务器公网 IPv4，并保持 Cloudflare
    DNS only（灰云）。
-2. 放行 SSH、入站 TCP `27600`，以及 Certbot standalone 签发和续期所需的 TCP
-   `80`。不要让 Nginx 或其他服务占用这台 Egress 的 `80`。
-3. Egress 不使用 `443`，也不经过 Nginx；`27600` 由容器直接发布。
+2. 放行 SSH、入站 TCP `27600`，以及 Certbot HTTP-01 签发和续期所需的 TCP
+   `80`。所有节点统一运行 Nginx；未安装时脚本会自动安装并启动。
+3. 脚本会为 `egress-1.aicbe.com` 创建独立的 Nginx `webroot` 虚拟主机，只处理
+   `/.well-known/acme-challenge/`，其余请求返回 `404`。它可以与其他域名共享
+   `80`，只执行配置检查和 graceful reload，不会停止其他网站。
+4. Egress 数据流不使用 `80/443`，也不经过 Nginx；`27600` 由容器直接发布。
 
 ### 3. 把初始化文件复制到服务器
 

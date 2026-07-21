@@ -46,6 +46,7 @@ jobs:
       image_build_tag: ${{ steps.refs.outputs.image_build_tag }}
       deploy: ${{ steps.refs.outputs.deploy }}
       should_build: ${{ steps.plan.outputs.should_build }}
+      gh_username: ${{ steps.github-identity.outputs.login }}
 
     steps:
       - name: Checkout workflow scripts
@@ -60,12 +61,19 @@ jobs:
         id: refs
         shell: bash
         env:
-          GH_TOKEN: ${{ secrets.ONE_BROWSER_ACTION_TOKEN || github.token }}
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
           EGRESS_REPOSITORY: ${{ env.EGRESS_REPOSITORY }}
           EGRESS_REF_INPUT: ${{ inputs.egress_ref }}
           IMAGE_NAME: ${{ env.EGRESS_IMAGE_NAME }}
           DEPLOY_INPUT: ${{ inputs.deploy }}
         run: bash action/.github/scripts/resolve-egress-release.sh
+
+      - name: Resolve GitHub token identity
+        id: github-identity
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+        run: echo "login=$(gh api user --jq .login)" >> "$GITHUB_OUTPUT"
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -74,8 +82,8 @@ jobs:
         uses: docker/login-action@v3
         with:
           registry: ${{ env.REGISTRY }}
-          username: ${{ secrets.GHCR_USERNAME || github.actor }}
-          password: ${{ secrets.GHCR_TOKEN || secrets.ONE_BROWSER_ACTION_TOKEN || github.token }}
+          username: ${{ steps.github-identity.outputs.login }}
+          password: ${{ secrets.GH_TOKEN }}
 
       - name: Decide whether to build
         id: plan
@@ -120,7 +128,7 @@ jobs:
           repository: ${{ needs.resolve.outputs.egress_repository }}
           ref: ${{ needs.resolve.outputs.egress_sha }}
           path: egress
-          token: ${{ secrets.ONE_BROWSER_ACTION_TOKEN || github.token }}
+          token: ${{ secrets.GH_TOKEN }}
           clean: true
           fetch-depth: 1
           persist-credentials: false
@@ -132,8 +140,8 @@ jobs:
         uses: docker/login-action@v3
         with:
           registry: ${{ env.REGISTRY }}
-          username: ${{ secrets.GHCR_USERNAME || github.actor }}
-          password: ${{ secrets.GHCR_TOKEN || secrets.ONE_BROWSER_ACTION_TOKEN || github.token }}
+          username: ${{ needs.resolve.outputs.gh_username }}
+          password: ${{ secrets.GH_TOKEN }}
 
       - name: Build and push Docker image
         uses: docker/build-push-action@v6
@@ -179,8 +187,8 @@ jobs:
         uses: docker/login-action@v3
         with:
           registry: ${{ env.REGISTRY }}
-          username: ${{ secrets.GHCR_USERNAME || github.actor }}
-          password: ${{ secrets.GHCR_TOKEN || secrets.ONE_BROWSER_ACTION_TOKEN || github.token }}
+          username: ${{ needs.resolve.outputs.gh_username }}
+          password: ${{ secrets.GH_TOKEN }}
 
       - name: Publish multi-platform image
         id: manifest
@@ -240,16 +248,43 @@ jobs:
       fail-fast: true
       max-parallel: 1
       matrix: ${{ fromJSON(needs.targets.outputs.canary_matrix) }}
-    uses: ./.github/workflows/deploy-egress-node.yml
-    with:
-      egress_repository: ${{ needs.resolve.outputs.egress_repository }}
-      egress_sha: ${{ needs.resolve.outputs.egress_sha }}
-      image_pinned_ref: ${{ needs.publish.outputs.image_pinned_ref }}
-      target_json: ${{ toJSON(matrix.target) }}
-    secrets:
-      ONE_BROWSER_ACTION_TOKEN: ${{ secrets.ONE_BROWSER_ACTION_TOKEN }}
-      GHCR_USERNAME: ${{ secrets.GHCR_USERNAME }}
-      GHCR_READ_TOKEN: ${{ secrets.GHCR_READ_TOKEN }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment:
+      name: ${{ matrix.target.environment }}
+      url: https://${{ matrix.target.endpoint }}
+    concurrency:
+      group: one-browser-egress-${{ matrix.target.id }}-deploy
+      cancel-in-progress: false
+
+    steps:
+      - name: Checkout Egress
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ needs.resolve.outputs.egress_repository }}
+          ref: ${{ needs.resolve.outputs.egress_sha }}
+          path: egress
+          token: ${{ secrets.GH_TOKEN }}
+          clean: true
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Checkout deployment action
+        uses: actions/checkout@v4
+        with:
+          path: action
+          clean: true
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Deploy Egress node
+        uses: ./action/.github/actions/egress
+        with:
+          target_json: ${{ toJSON(matrix.target) }}
+          image_pinned_ref: ${{ needs.publish.outputs.image_pinned_ref }}
+          deploy_ssh_key: ${{ secrets.DEPLOY_SSH_KEY }}
+          deploy_known_hosts: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+          gh_token: ${{ secrets.GH_TOKEN }}
 
   deploy-rollout:
     name: Rollout ${{ matrix.target.id }}
@@ -271,13 +306,40 @@ jobs:
       fail-fast: false
       max-parallel: 2
       matrix: ${{ fromJSON(needs.targets.outputs.rollout_matrix) }}
-    uses: ./.github/workflows/deploy-egress-node.yml
-    with:
-      egress_repository: ${{ needs.resolve.outputs.egress_repository }}
-      egress_sha: ${{ needs.resolve.outputs.egress_sha }}
-      image_pinned_ref: ${{ needs.publish.outputs.image_pinned_ref }}
-      target_json: ${{ toJSON(matrix.target) }}
-    secrets:
-      ONE_BROWSER_ACTION_TOKEN: ${{ secrets.ONE_BROWSER_ACTION_TOKEN }}
-      GHCR_USERNAME: ${{ secrets.GHCR_USERNAME }}
-      GHCR_READ_TOKEN: ${{ secrets.GHCR_READ_TOKEN }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment:
+      name: ${{ matrix.target.environment }}
+      url: https://${{ matrix.target.endpoint }}
+    concurrency:
+      group: one-browser-egress-${{ matrix.target.id }}-deploy
+      cancel-in-progress: false
+
+    steps:
+      - name: Checkout Egress
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ needs.resolve.outputs.egress_repository }}
+          ref: ${{ needs.resolve.outputs.egress_sha }}
+          path: egress
+          token: ${{ secrets.GH_TOKEN }}
+          clean: true
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Checkout deployment action
+        uses: actions/checkout@v4
+        with:
+          path: action
+          clean: true
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Deploy Egress node
+        uses: ./action/.github/actions/egress
+        with:
+          target_json: ${{ toJSON(matrix.target) }}
+          image_pinned_ref: ${{ needs.publish.outputs.image_pinned_ref }}
+          deploy_ssh_key: ${{ secrets.DEPLOY_SSH_KEY }}
+          deploy_known_hosts: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+          gh_token: ${{ secrets.GH_TOKEN }}

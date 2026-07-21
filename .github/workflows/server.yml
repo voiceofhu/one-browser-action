@@ -64,13 +64,14 @@ jobs:
       force: ${{ steps.refs.outputs.force }}
       deploy: ${{ steps.refs.outputs.deploy }}
       should_build: ${{ steps.plan.outputs.should_build }}
+      gh_username: ${{ steps.github-identity.outputs.login }}
 
     steps:
       - name: Resolve refs
         id: refs
         shell: bash
         env:
-          GH_TOKEN: ${{ secrets.ONE_BROWSER_ACTION_TOKEN || github.token }}
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
           SERVER_REPOSITORY_INPUT: ${{ inputs.server_repository }}
           SERVER_REF_INPUT: ${{ inputs.server_ref }}
           VERSION_TAG_INPUT: ${{ inputs.version_tag }}
@@ -144,6 +145,13 @@ jobs:
           printf 'image  %s\n' "$image_revision_tag"
           printf 'tag    %s\n' "${server_tag:-none}"
 
+      - name: Resolve GitHub token identity
+        id: github-identity
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+        run: echo "login=$(gh api user --jq .login)" >> "$GITHUB_OUTPUT"
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
@@ -151,8 +159,8 @@ jobs:
         uses: docker/login-action@v3
         with:
           registry: ${{ env.REGISTRY }}
-          username: ${{ secrets.GHCR_USERNAME || github.actor }}
-          password: ${{ secrets.GHCR_TOKEN || secrets.ONE_BROWSER_ACTION_TOKEN || github.token }}
+          username: ${{ steps.github-identity.outputs.login }}
+          password: ${{ secrets.GH_TOKEN }}
 
       - name: Decide whether to build
         id: plan
@@ -197,7 +205,7 @@ jobs:
           repository: ${{ needs.resolve.outputs.server_repository }}
           ref: ${{ needs.resolve.outputs.server_sha }}
           path: server
-          token: ${{ secrets.ONE_BROWSER_ACTION_TOKEN || github.token }}
+          token: ${{ secrets.GH_TOKEN }}
           clean: true
           fetch-depth: 1
 
@@ -207,7 +215,7 @@ jobs:
           repository: ${{ needs.resolve.outputs.web_repository }}
           ref: ${{ needs.resolve.outputs.web_sha }}
           path: server/${{ env.WEB_WORKDIR }}
-          token: ${{ secrets.ONE_BROWSER_ACTION_TOKEN || github.token }}
+          token: ${{ secrets.GH_TOKEN }}
           clean: true
           fetch-depth: 1
 
@@ -265,7 +273,7 @@ jobs:
           repository: ${{ needs.resolve.outputs.server_repository }}
           ref: ${{ needs.resolve.outputs.server_sha }}
           path: server
-          token: ${{ secrets.ONE_BROWSER_ACTION_TOKEN || github.token }}
+          token: ${{ secrets.GH_TOKEN }}
           clean: true
           fetch-depth: 1
 
@@ -301,8 +309,8 @@ jobs:
         uses: docker/login-action@v3
         with:
           registry: ${{ env.REGISTRY }}
-          username: ${{ secrets.GHCR_USERNAME || github.actor }}
-          password: ${{ secrets.GHCR_TOKEN || secrets.ONE_BROWSER_ACTION_TOKEN || github.token }}
+          username: ${{ needs.resolve.outputs.gh_username }}
+          password: ${{ secrets.GH_TOKEN }}
 
       - name: Build and push Docker image
         uses: docker/build-push-action@v6
@@ -338,8 +346,8 @@ jobs:
         uses: docker/login-action@v3
         with:
           registry: ${{ env.REGISTRY }}
-          username: ${{ secrets.GHCR_USERNAME || github.actor }}
-          password: ${{ secrets.GHCR_TOKEN || secrets.ONE_BROWSER_ACTION_TOKEN || github.token }}
+          username: ${{ needs.resolve.outputs.gh_username }}
+          password: ${{ secrets.GH_TOKEN }}
 
       - name: Create manifest tags
         shell: bash
@@ -378,8 +386,14 @@ jobs:
       (needs.resolve.outputs.should_build == 'false' || needs.manifest.result == 'success')
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    environment:
+      name: egress-3
+      url: https://browser.aicbe.com
+    env:
+      DEPLOY_HOST: 51.68.38.135
+      DEPLOY_PORT: "22"
     concurrency:
-      group: one-browser-production-deploy
+      group: one-browser-egress-egress-3-deploy
       cancel-in-progress: false
 
     steps:
@@ -389,9 +403,17 @@ jobs:
           repository: ${{ needs.resolve.outputs.server_repository }}
           ref: ${{ needs.resolve.outputs.server_sha }}
           path: server
-          token: ${{ secrets.ONE_BROWSER_ACTION_TOKEN || github.token }}
+          token: ${{ secrets.GH_TOKEN }}
           clean: true
           fetch-depth: 1
+
+      - name: Checkout deployment action
+        uses: actions/checkout@v4
+        with:
+          path: action
+          clean: true
+          fetch-depth: 1
+          persist-credentials: false
 
       - name: Prepare deployment image
         id: deploy-image
@@ -405,7 +427,6 @@ jobs:
       - name: Validate deployment secrets
         shell: bash
         env:
-          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
           DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
           DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
           DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
@@ -423,19 +444,26 @@ jobs:
         shell: bash
         working-directory: server
         env:
-          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
-          DEPLOY_PORT: ${{ secrets.DEPLOY_PORT || '22' }}
           DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
           DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
           DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
         run: bash .github/scripts/configure-ssh.sh
+
+      - name: Log server in to GitHub Container Registry
+        id: registry_login
+        shell: bash
+        env:
+          SSH_HOST: one-browser-deploy
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+          USE_SUDO: ${{ vars.DEPLOY_USE_SUDO || '0' }}
+        run: bash action/.github/actions/egress/registry-auth.sh
 
       - name: Deploy image with Docker Compose
         shell: bash
         working-directory: server
         env:
           SSH_HOST: one-browser-deploy
-          REMOTE_DIR: ${{ secrets.DEPLOY_REMOTE_DIR || '/opt/one-browser' }}
+          REMOTE_DIR: ${{ vars.DEPLOY_REMOTE_DIR || '/opt/one-browser' }}
           DOCKER_IMAGE: ${{ steps.deploy-image.outputs.image }}
           COMPOSE_PROJECT_NAME: ${{ vars.DEPLOY_COMPOSE_PROJECT_NAME || 'one-browser' }}
           COMPOSE_SERVICE_NAME: ${{ vars.DEPLOY_COMPOSE_SERVICE_NAME || 'server' }}
@@ -452,3 +480,13 @@ jobs:
           LOG_TAIL: ${{ vars.DEPLOY_LOG_TAIL || '120' }}
           LOG_FOLLOW_SECONDS: ${{ vars.DEPLOY_LOG_FOLLOW_SECONDS || '5' }}
         run: bash .github/scripts/deploy-docker-compose.sh
+
+      - name: Log server out of GitHub Container Registry
+        if: ${{ always() && steps.registry_login.outcome == 'success' }}
+        continue-on-error: true
+        shell: bash
+        env:
+          SSH_HOST: one-browser-deploy
+          REGISTRY_ACTION: logout
+          USE_SUDO: ${{ vars.DEPLOY_USE_SUDO || '0' }}
+        run: bash action/.github/actions/egress/registry-auth.sh

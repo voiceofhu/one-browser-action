@@ -37,7 +37,7 @@ jobs:
           repository: ${{ inputs.app_repository }}
           ref: ${{ inputs.app_ref }}
           path: app
-          token: ${{ secrets.ONE_BROWSER_ACTION_TOKEN || github.token }}
+          token: ${{ secrets.GH_TOKEN || github.token }}
           clean: true
           fetch-depth: 1
 

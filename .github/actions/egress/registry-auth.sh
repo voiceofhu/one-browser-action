@@ -29,12 +29,16 @@ remote_docker=$(printf '%q ' "${docker_command[@]}")
 
 case "$REGISTRY_ACTION" in
   login)
-    : "${GHCR_USERNAME:?GHCR_USERNAME is required}"
-    : "${GHCR_READ_TOKEN:?GHCR_READ_TOKEN is required}"
+    : "${GH_TOKEN:?GH_TOKEN is required}"
+    registry_username=$(gh api user --jq .login)
+    if [ -z "$registry_username" ]; then
+      echo "Could not resolve the GitHub username for GH_TOKEN" >&2
+      exit 1
+    fi
     # The registry and username are escaped with printf %q before remote expansion.
     # shellcheck disable=SC2029
-    printf '%s' "$GHCR_READ_TOKEN" | ssh "$SSH_HOST" \
-      "$remote_docker login $(shell_quote "$REGISTRY_HOST") --username $(shell_quote "$GHCR_USERNAME") --password-stdin"
+    printf '%s' "$GH_TOKEN" | ssh "$SSH_HOST" \
+      "$remote_docker login $(shell_quote "$REGISTRY_HOST") --username $(shell_quote "$registry_username") --password-stdin"
     ;;
   logout)
     # The registry is escaped with printf %q before remote expansion.

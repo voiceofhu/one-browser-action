@@ -95,15 +95,15 @@ manifest. Production deploys use `sha-<egress_sha>`. The Egress source
 repository owns its Dockerfile, Compose file, SSH setup, and rollback-aware
 deployment scripts.
 
-The deploy stage reads `.github/config/egress-targets.json` and calls
-`.github/workflows/deploy-egress-node.yml` once for each selected node. That
-job-level wrapper invokes the composite entrypoint at
+The deploy stage reads `.github/config/egress-targets.json` and creates one
+matrix job for each selected node. Each matrix job binds its target's GitHub
+Environment directly, then invokes the composite entrypoint at
 `.github/actions/egress/action.yml`; its identity check, registry login, public
 probe, and rollback helpers live together in the same action directory. The
 image is built and published once, then pinned by manifest digest for every
 deployment. The lowest selected wave runs first as a canary; later-wave matrix
-jobs start only after that reusable workflow succeeds. Each node job uses its
-target's GitHub Environment, has independent concurrency, verifies the host
+jobs start only after that canary succeeds. Each node job has independent
+concurrency, verifies the host
 identity before changing Compose, and performs its own rollback-aware container
 deploy and public readiness check. After deployment, the workflow verifies the
 public certificate and ALPN `h2`, then requires the unauthenticated protocol
@@ -112,9 +112,8 @@ Failure of that public check restores the pre-deploy Compose file and image.
 
 Target configuration contains no private keys, registry credentials, or Egress
 control tokens. Per-node SSH credentials remain in GitHub Environment secrets,
-shared GHCR pull credentials remain in Repository secrets, and each control
-token remains only in Server registration and the target host's persistent
-`.env`.
+the shared `GH_TOKEN` remains a Repository secret, and each control token
+remains only in Server registration and the target host's persistent `.env`.
 
 ### App Release
 
@@ -253,26 +252,25 @@ available from the completed `Windows App Debug` run under `Artifacts`.
 
 ## Secrets
 
-The source repositories no longer need an Actions dispatch token. The local
-`one-browser-action/.env` provides `GH_TOKEN` for workflow dispatch, while this
-public action repository needs `ONE_BROWSER_ACTION_TOKEN` to checkout private
-source repositories and publish its App Releases:
+The local `one-browser-action/.env` provides `GH_TOKEN` to `make` for workflow
+dispatch. GitHub Actions uses these Repository secrets:
 
 | Secret | Purpose |
 | --- | --- |
-| `ONE_BROWSER_ACTION_TOKEN` | PAT with source repository read access and `Contents: read/write` on `one-browser-action`. |
+| `GH_TOKEN` | PAT used to read the private source repositories, publish App Releases, and read/write the private GHCR images. |
+| `DEPLOY_USER` | SSH account used for Server deployment; currently `gh-deploy`. |
 
-Server deploy secrets remain repository-level because the Server has one
-production target:
+The workflows resolve the GitHub login associated with `GH_TOKEN` at runtime,
+so `GHCR_USERNAME`, `GHCR_READ_TOKEN`, `GHCR_TOKEN`, and
+`ONE_BROWSER_ACTION_TOKEN` are not required. `DEPLOY_USER` is only an SSH/Linux
+account name; it is not used as the GHCR username.
 
-- `DEPLOY_HOST`
-- `DEPLOY_USER`
-- `DEPLOY_SSH_KEY`
-- `DEPLOY_KNOWN_HOSTS`
-- optional `DEPLOY_PORT`
-- optional Server-only `DEPLOY_REMOTE_DIR`
-- shared `GHCR_USERNAME` (required by Egress; optional for Server-only deploys)
-- optional `GHCR_TOKEN`
+Server deployment binds the `egress-3` GitHub Environment and reuses its
+`DEPLOY_SSH_KEY` and `DEPLOY_KNOWN_HOSTS`. Its production host is the same
+machine as `egress-3` (`51.68.38.135:22`). No separate Repository-level
+`DEPLOY_HOST`, `DEPLOY_SSH_KEY`, or `DEPLOY_KNOWN_HOSTS` is required. Server and
+`egress-3` deployments share one concurrency group so their temporary registry
+logins cannot race on the same Docker host.
 
 For Egress, create one GitHub Environment per target ID, for example
 `egress-3`. Add these same secret names to every environment:
@@ -299,23 +297,12 @@ The detected IP must exactly match this node's `host` in
 for a custom port, the host field must be `[IP]:PORT`. The IPv4 lookup uses the
 [ipify text endpoint](https://www.ipify.org/).
 
-Configure the shared remote-pull credentials once as Repository secrets:
-
-- `GHCR_USERNAME`: GitHub account used by every Egress host for image pulls
-- `GHCR_READ_TOKEN`: dedicated token limited to `read:packages`
-
-Do not duplicate these two GHCR secrets in node Environments. If the same name
-exists at both scopes, GitHub gives the Environment secret precedence. Do not
-put a private key, control token, GHCR password, or host `.env` value in
-`egress-targets.json`.
-
-Egress does not require any GitHub Actions Variables (`vars.*`). At repository
-scope, `ONE_BROWSER_ACTION_TOKEN` is required to read the private Egress source;
-`GHCR_USERNAME` and `GHCR_READ_TOKEN` are required for every remote pull.
-`GHCR_TOKEN`, limited to image publishing, is recommended separately; otherwise
-the existing publish-token fallback must itself have package write permission.
-The local `.env` uses `GH_TOKEN` only to dispatch the workflow and never sends
-it to an Egress container.
+Do not put a private key, control token, GitHub token, or host `.env` value in
+`egress-targets.json`. Egress does not require any GitHub Actions Variables
+(`vars.*`). During a private-image deploy, the workflow derives the registry
+username from the Repository `GH_TOKEN`, sends the token to `docker login`
+through stdin, pulls the image, and logs the target out afterward. The token is
+never passed to the Egress container.
 
 Non-secret deploy parameters live in
 `.github/config/egress-targets.json`:
@@ -334,10 +321,10 @@ Non-secret deploy parameters live in
 | `use_sudo` | `0` for direct Docker access or `1` for the exact passwordless sudo contract |
 | log/check fields | Per-node public validation and bounded post-deploy logs |
 
-`egress-3` is currently enabled. `egress-1` and `egress-2` are recorded but
-disabled, so `all` cannot deploy to an unprovisioned host. Enable one only after
-its persistent files, certificate, Server registration, SSH Environment
-secrets, Docker access, and public `27600` path are ready.
+`egress-1`, `egress-2`, and `egress-3` are currently enabled, so `all` selects
+all three nodes. Keep any new node disabled until its persistent files,
+certificate, Server registration, SSH Environment secrets, Docker access, and
+public `27600` path are ready.
 
 The control network name is now a per-target parameter. Docker networks are
 host-local and do not connect Egress nodes on different servers.
@@ -446,10 +433,10 @@ Use this order for `egress-N`:
 3. Register that exact ID, endpoint, capacity, region, carrier, and one-time
    token through `one-browser-server egress-node upsert`.
 4. Create a GitHub Environment with the same name as the target ID and add only
-   its `DEPLOY_SSH_KEY` and `DEPLOY_KNOWN_HOSTS`. Configure the shared
-   `GHCR_USERNAME` and `GHCR_READ_TOKEN` once as Repository secrets, restricting
-   the token to `read:packages`; the workflow logs the target out after the
-   pull. Add required reviewers if production approval is desired.
+   its `DEPLOY_SSH_KEY` and `DEPLOY_KNOWN_HOSTS`. Configure Repository
+   `GH_TOKEN` and `DEPLOY_USER` once; the workflow derives the GHCR username
+   from `GH_TOKEN` and logs the target out after the pull. Add required
+   reviewers if production approval is desired.
 5. Add or update the non-secret entry in `egress-targets.json`, including its
    `wave` and expected `control_url`. Keep
    `enabled: false` until manual `validate-config`, container health, and public

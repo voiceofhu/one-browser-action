@@ -14,11 +14,8 @@ inputs:
   deploy_known_hosts:
     description: Pinned SSH known_hosts entry for the target
     required: true
-  ghcr_username:
-    description: Shared repository-level GitHub Container Registry pull username
-    required: true
-  ghcr_read_token:
-    description: Shared repository-level GitHub Container Registry token limited to read:packages
+  gh_token:
+    description: Repository GH_TOKEN used to resolve its GitHub user and pull the private image
     required: true
 
 runs:
@@ -29,8 +26,7 @@ runs:
       env:
         DEPLOY_SSH_KEY: ${{ inputs.deploy_ssh_key }}
         DEPLOY_KNOWN_HOSTS: ${{ inputs.deploy_known_hosts }}
-        GHCR_USERNAME: ${{ inputs.ghcr_username }}
-        GHCR_READ_TOKEN: ${{ inputs.ghcr_read_token }}
+        GH_TOKEN: ${{ inputs.gh_token }}
       run: |
         set -Eeuo pipefail
         if [ -z "$DEPLOY_SSH_KEY" ]; then
@@ -41,12 +37,8 @@ runs:
           echo "DEPLOY_KNOWN_HOSTS is required in this target's GitHub Environment" >&2
           exit 1
         fi
-        if [ -z "$GHCR_USERNAME" ]; then
-          echo "GHCR_USERNAME is required as a shared Repository secret" >&2
-          exit 1
-        fi
-        if [ -z "$GHCR_READ_TOKEN" ]; then
-          echo "GHCR_READ_TOKEN is required as a shared Repository secret" >&2
+        if [ -z "$GH_TOKEN" ]; then
+          echo "GH_TOKEN is required as a Repository secret" >&2
           exit 1
         fi
 
@@ -78,8 +70,7 @@ runs:
       env:
         SSH_HOST: one-browser-deploy
         USE_SUDO: ${{ fromJSON(inputs.target_json).use_sudo }}
-        GHCR_USERNAME: ${{ inputs.ghcr_username }}
-        GHCR_READ_TOKEN: ${{ inputs.ghcr_read_token }}
+        GH_TOKEN: ${{ inputs.gh_token }}
       run: bash "$GITHUB_ACTION_PATH/registry-auth.sh"
 
     - name: Deploy digest-pinned image with Docker Compose

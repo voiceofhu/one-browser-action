@@ -1,26 +1,26 @@
 # Egress 多服务器部署
 
-Egress workflow 采用“一次构建镜像、按节点调用可复用工作流、分波次部署”的方式。
+Egress workflow 采用“一次构建镜像、按节点运行矩阵任务、分波次部署”的方式。
 节点的非敏感参数保存在 `.github/config/egress-targets.json`，SSH 私钥和 host key
 保存在与节点同名的 GitHub Environment 中。节点控制 Token 只存在于对应服务器和
 Server 注册流程，不进入 Action 仓库。
 
-主工作流 `.github/workflows/egress.yml` 只负责解析版本、构建镜像和编排波次；
-`.github/workflows/deploy-egress-node.yml` 保留 Environment、并发锁等 job 级配置，
-再调用 `.github/actions/egress/action.yml`。身份校验、Registry 登录、公网检查和回滚
-脚本都收拢在 `.github/actions/egress/` 目录。生产容器使用 manifest digest 固定
-镜像，而不是可移动标签。
+主工作流 `.github/workflows/egress.yml` 负责解析版本、构建镜像和编排波次。每个矩阵
+任务直接绑定与节点同名的 GitHub Environment，再调用
+`.github/actions/egress/action.yml`。身份校验、Registry 登录、公网检查和回滚脚本都
+收拢在 `.github/actions/egress/` 目录。生产容器使用 manifest digest 固定镜像，
+而不是可移动标签。
 
 ## 当前节点
 
 | ID | 波次 | SSH 主机 | 公网数据地址 | 状态 |
 | --- | --- | --- | --- | --- |
 | `egress-3` | 1（当前灰度节点） | `51.68.38.135:22` | `egress-3.aicbe.com:27600` | enabled |
-| `egress-1` | 2 | `104.194.67.193:22` | `egress-1.aicbe.com:27600` | disabled |
-| `egress-2` | 2 | `64.186.255.123:22` | `egress-2.aicbe.com:27600` | disabled |
+| `egress-1` | 2 | `104.194.67.193:22` | `egress-1.aicbe.com:27600` | enabled |
+| `egress-2` | 2 | `64.186.255.123:22` | `egress-2.aicbe.com:27600` | enabled |
 
-`deploy_targets=all` 只选择 `enabled: true` 的节点，因此尚未初始化完成的服务器不会
-被批量部署。
+`deploy_targets=all` 只选择 `enabled: true` 的节点；当前三个节点都会进入批量部署。
+新增节点在初始化和验证完成前应保持 `enabled: false`。
 
 ## 每个节点的 GitHub Environment
 
@@ -32,9 +32,9 @@ Environment，例如 `egress-3`，添加：
 - 可选 required reviewers：用于生产部署人工审批。
 
 服务器地址、端口、用户名和公网 endpoint 是非敏感参数，统一放在版本控制的节点
-清单中。所有 Egress 共用的 GHCR 拉取账号放在 Repository secrets，不要在每个
-Environment 重复配置。不要把 Egress Token、`.env`、TLS 私钥或 GHCR 密码写入
-JSON。
+清单中。所有 workflow 共用的 `GH_TOKEN` 和 Server SSH 用户名放在 Repository
+secrets，不要在每个 Environment 重复配置。不要把 Egress Token、`.env`、TLS
+私钥或 GitHub Token 写入 JSON。
 
 ## GitHub 配置清单
 
@@ -42,10 +42,8 @@ Repository Secrets：
 
 | 名称 | 用途 |
 | --- | --- |
-| `ONE_BROWSER_ACTION_TOKEN` | 读取私有 `one-browser-egress` 源码；必须配置 |
-| `GHCR_USERNAME` | 所有构建和远端拉取共用的 GHCR 账号；必须配置 |
-| `GHCR_READ_TOKEN` | 所有 Egress 服务器共用的拉取 Token，仅授予 `read:packages`；必须配置 |
-| `GHCR_TOKEN` | 发布镜像，授予 `write:packages`；建议与源码 Token 分开 |
+| `GH_TOKEN` | 读取私有源码、发布 App Release，以及读写私有 GHCR 镜像 |
+| `DEPLOY_USER` | Server 部署使用的 SSH 用户名，当前为 `gh-deploy` |
 
 每个 `egress-N` Environment Secrets：
 
@@ -54,12 +52,21 @@ Repository Secrets：
 | `DEPLOY_SSH_KEY` | 该节点 `gh-deploy` 用户的私钥 |
 | `DEPLOY_KNOWN_HOSTS` | 只包含该节点已核对的 SSH host key |
 
-如果 Environment 中已经存在同名的 `GHCR_USERNAME` 或 `GHCR_READ_TOKEN`，请删除；
-GitHub 会优先使用 Environment secret，从而覆盖共用的 Repository secret。
+workflow 会通过 `GH_TOKEN` 自动查询它对应的 GitHub 用户名，因此不再需要
+`GHCR_USERNAME`、`GHCR_READ_TOKEN`、`GHCR_TOKEN` 或
+`ONE_BROWSER_ACTION_TOKEN`。`DEPLOY_USER` 只是 SSH/Linux 用户名，不是 GHCR
+用户名。
 
 Egress workflow 当前不需要任何 GitHub Actions Variables（`vars.*`）。本地执行
 `make deploy-egress ...` 只需要仓库 `.env` 中的 `GH_TOKEN`，它用于调用 GitHub
-Workflow Dispatch API，不会传给 Egress 容器。
+Workflow Dispatch API。Action 运行时使用 Repository `GH_TOKEN` 登录私有 GHCR，
+完成拉取后会退出登录，并且不会把 Token 传给 Egress 容器。
+
+Server deploy job 绑定 `egress-3` Environment，复用其中的
+`DEPLOY_SSH_KEY`、`DEPLOY_KNOWN_HOSTS`，连接同一台
+`51.68.38.135:22` 服务器；不再单独配置 Server 的 Repository 级 SSH 私钥和
+known_hosts。Server 与 `egress-3` 使用同一个 concurrency group，避免两次部署在
+同一台 Docker 主机上并发登录、退出 GHCR。
 
 ## 新服务器初始化顺序
 
@@ -161,8 +168,8 @@ Server 控制地址固定为 `https://browser.aicbe.com`，不再询问。节点
    完全一致。当前统一使用 SSH `22`；如果以后改为其他端口，host 字段必须写成
    `[IP]:端口`。公网 IPv4 由 [ipify](https://www.ipify.org/) 查询。
 3. 创建 `egress-1` GitHub Environment，只设置 `DEPLOY_SSH_KEY` 和
-   `DEPLOY_KNOWN_HOSTS`。共用的 `GHCR_USERNAME`、`GHCR_READ_TOKEN` 只需在
-   Repository secrets 配置一次。
+   `DEPLOY_KNOWN_HOSTS`。共用的 `GH_TOKEN`、`DEPLOY_USER` 只需在 Repository
+   secrets 配置一次。
 4. 在 `.github/config/egress-targets.json` 中确认 host、endpoint、control URL 和
    用户均匹配，随后将 `enabled` 改为 `true`。
 5. 首次只部署这个节点：`make deploy-egress 1`。确认容器健康和公网 TLS/H2 检查

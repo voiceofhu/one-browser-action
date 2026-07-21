@@ -280,6 +280,25 @@ For Egress, create one GitHub Environment per target ID, for example
 - `DEPLOY_SSH_KEY`: private login key for that node's deploy account
 - `DEPLOY_KNOWN_HOSTS`: pinned SSH host-key line for exactly that target
 
+Run this on each Egress server to generate the complete
+`DEPLOY_KNOWN_HOSTS` value without hard-coding its public IPv4:
+
+```bash
+# Detect this server's public IPv4 and format its local ED25519 Host Key as a
+# known_hosts record. Copy the entire output line into DEPLOY_KNOWN_HOSTS.
+EGRESS_PUBLIC_IPV4="$(curl -4fsS https://api.ipify.org)" &&
+  sudo awk -v host="$EGRESS_PUBLIC_IPV4" \
+    '{print host, $1, $2}' \
+    /etc/ssh/ssh_host_ed25519_key.pub
+```
+
+The output must look like `IP ssh-ed25519 AAAA...`; the `SHA256:...` value from
+`ssh-keygen -lf` is only a fingerprint and is not a valid known-hosts record.
+The detected IP must exactly match this node's `host` in
+`egress-targets.json`. This command assumes the current standard SSH port `22`;
+for a custom port, the host field must be `[IP]:PORT`. The IPv4 lookup uses the
+[ipify text endpoint](https://www.ipify.org/).
+
 Configure the shared remote-pull credentials once as Repository secrets:
 
 - `GHCR_USERNAME`: GitHub account used by every Egress host for image pulls

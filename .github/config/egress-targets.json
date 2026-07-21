@@ -3,7 +3,7 @@
   "targets": [
     {
       "id": "egress-1",
-      "enabled": false,
+      "enabled": true,
       "wave": 2,
       "environment": "egress-1",
       "host": "104.194.67.193",
@@ -23,7 +23,7 @@
     },
     {
       "id": "egress-2",
-      "enabled": false,
+      "enabled": true,
       "wave": 2,
       "environment": "egress-2",
       "host": "64.186.255.123",

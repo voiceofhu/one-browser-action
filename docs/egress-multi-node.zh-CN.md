@@ -143,8 +143,23 @@ Server 控制地址固定为 `https://browser.aicbe.com`，不再询问。节点
    `egress-node upsert`，注册 `egress-1`、`egress-1.aicbe.com:27600`、地域、
    运营商和容量。注册完成后删除这份额外 Token 文件；运行副本已经安全保存在
    `/opt/one-browser-egress/.env`。
-2. 将脚本打印的 SSH 指纹与从可信渠道取得的 host key 对比，把确认后的
-   known-hosts 行写入 `DEPLOY_KNOWN_HOSTS`。
+2. 在每台 Egress 服务器执行下面命令，自动获取本机公网 IPv4，并将本机 ED25519
+   Host Key 拼成 `known_hosts` 格式：
+
+   ```bash
+   # 自动获取当前服务器公网 IPv4，并输出完整的 DEPLOY_KNOWN_HOSTS 记录。
+   # 把命令输出的整行复制到该节点的 DEPLOY_KNOWN_HOSTS。
+   EGRESS_PUBLIC_IPV4="$(curl -4fsS https://api.ipify.org)" &&
+     sudo awk -v host="$EGRESS_PUBLIC_IPV4" \
+       '{print host, $1, $2}' \
+       /etc/ssh/ssh_host_ed25519_key.pub
+   ```
+
+   正确输出格式为 `IP ssh-ed25519 AAAA...`。`ssh-keygen -lf` 输出的
+   `SHA256:...` 只是用于人工核对的指纹，不能直接填入 `DEPLOY_KNOWN_HOSTS`。
+   自动获取的 IP 必须与 `.github/config/egress-targets.json` 中该节点的 `host`
+   完全一致。当前统一使用 SSH `22`；如果以后改为其他端口，host 字段必须写成
+   `[IP]:端口`。公网 IPv4 由 [ipify](https://www.ipify.org/) 查询。
 3. 创建 `egress-1` GitHub Environment，只设置 `DEPLOY_SSH_KEY` 和
    `DEPLOY_KNOWN_HOSTS`。共用的 `GHCR_USERNAME`、`GHCR_READ_TOKEN` 只需在
    Repository secrets 配置一次。

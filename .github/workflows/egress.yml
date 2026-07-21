@@ -162,7 +162,6 @@ jobs:
     concurrency:
       group: one-browser-egress-manifest
       cancel-in-progress: false
-      queue: max
 
     steps:
       - name: Checkout workflow scripts
@@ -247,7 +246,10 @@ jobs:
       egress_sha: ${{ needs.resolve.outputs.egress_sha }}
       image_pinned_ref: ${{ needs.publish.outputs.image_pinned_ref }}
       target_json: ${{ toJSON(matrix.target) }}
-    secrets: inherit
+    secrets:
+      ONE_BROWSER_ACTION_TOKEN: ${{ secrets.ONE_BROWSER_ACTION_TOKEN }}
+      GHCR_USERNAME: ${{ secrets.GHCR_USERNAME }}
+      GHCR_READ_TOKEN: ${{ secrets.GHCR_READ_TOKEN }}
 
   deploy-rollout:
     name: Rollout ${{ matrix.target.id }}
@@ -275,4 +277,7 @@ jobs:
       egress_sha: ${{ needs.resolve.outputs.egress_sha }}
       image_pinned_ref: ${{ needs.publish.outputs.image_pinned_ref }}
       target_json: ${{ toJSON(matrix.target) }}
-    secrets: inherit
+    secrets:
+      ONE_BROWSER_ACTION_TOKEN: ${{ secrets.ONE_BROWSER_ACTION_TOKEN }}
+      GHCR_USERNAME: ${{ secrets.GHCR_USERNAME }}
+      GHCR_READ_TOKEN: ${{ secrets.GHCR_READ_TOKEN }}

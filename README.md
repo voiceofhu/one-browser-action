@@ -110,8 +110,11 @@ public certificate and ALPN `h2`, then requires the unauthenticated protocol
 response to be `407 Proxy Authentication Required` with a Bearer challenge.
 Failure of that public check restores the pre-deploy Compose file and image.
 
-Target configuration contains no private keys or Egress control tokens. Those
-remain in GitHub Environment secrets and each host's persistent `.env`.
+Target configuration contains no private keys, registry credentials, or Egress
+control tokens. Per-node SSH credentials remain in GitHub Environment secrets,
+shared GHCR pull credentials remain in Repository secrets, and each control
+token remains only in Server registration and the target host's persistent
+`.env`.
 
 ### App Release
 
@@ -268,7 +271,7 @@ production target:
 - `DEPLOY_KNOWN_HOSTS`
 - optional `DEPLOY_PORT`
 - optional Server-only `DEPLOY_REMOTE_DIR`
-- optional `GHCR_USERNAME`
+- shared `GHCR_USERNAME` (required by Egress; optional for Server-only deploys)
 - optional `GHCR_TOKEN`
 
 For Egress, create one GitHub Environment per target ID, for example
@@ -276,21 +279,24 @@ For Egress, create one GitHub Environment per target ID, for example
 
 - `DEPLOY_SSH_KEY`: private login key for that node's deploy account
 - `DEPLOY_KNOWN_HOSTS`: pinned SSH host-key line for exactly that target
-- `GHCR_USERNAME`: GitHub account used only for the remote image pull
+
+Configure the shared remote-pull credentials once as Repository secrets:
+
+- `GHCR_USERNAME`: GitHub account used by every Egress host for image pulls
 - `GHCR_READ_TOKEN`: dedicated token limited to `read:packages`
 
-Repository-level secrets with those names remain available as a migration
-fallback for the first target, but environment-scoped secrets are required once
-different nodes use different keys or host keys. Do not put a private key,
-control token, GHCR password, or host `.env` value in
+Do not duplicate these two GHCR secrets in node Environments. If the same name
+exists at both scopes, GitHub gives the Environment secret precedence. Do not
+put a private key, control token, GHCR password, or host `.env` value in
 `egress-targets.json`.
 
 Egress does not require any GitHub Actions Variables (`vars.*`). At repository
-scope, `ONE_BROWSER_ACTION_TOKEN` is required to read the private Egress source.
-Explicit `GHCR_USERNAME` plus a `GHCR_TOKEN` limited to image publishing are
-recommended; otherwise the existing token fallback must itself have package
-write permission. The local `.env` uses `GH_TOKEN` only to dispatch the
-workflow and never sends it to an Egress container.
+scope, `ONE_BROWSER_ACTION_TOKEN` is required to read the private Egress source;
+`GHCR_USERNAME` and `GHCR_READ_TOKEN` are required for every remote pull.
+`GHCR_TOKEN`, limited to image publishing, is recommended separately; otherwise
+the existing publish-token fallback must itself have package write permission.
+The local `.env` uses `GH_TOKEN` only to dispatch the workflow and never sends
+it to an Egress container.
 
 Non-secret deploy parameters live in
 `.github/config/egress-targets.json`:
@@ -420,11 +426,11 @@ Use this order for `egress-N`:
    registration.
 3. Register that exact ID, endpoint, capacity, region, carrier, and one-time
    token through `one-browser-server egress-node upsert`.
-4. Create a GitHub Environment with the same name as the target ID and add its
-   `DEPLOY_SSH_KEY`, `DEPLOY_KNOWN_HOSTS`, `GHCR_USERNAME`, and
-   `GHCR_READ_TOKEN` secrets. Restrict the registry token to `read:packages`;
-   the workflow logs the target out after the pull. Add required reviewers if
-   production approval is desired.
+4. Create a GitHub Environment with the same name as the target ID and add only
+   its `DEPLOY_SSH_KEY` and `DEPLOY_KNOWN_HOSTS`. Configure the shared
+   `GHCR_USERNAME` and `GHCR_READ_TOKEN` once as Repository secrets, restricting
+   the token to `read:packages`; the workflow logs the target out after the
+   pull. Add required reviewers if production approval is desired.
 5. Add or update the non-secret entry in `egress-targets.json`, including its
    `wave` and expected `control_url`. Keep
    `enabled: false` until manual `validate-config`, container health, and public

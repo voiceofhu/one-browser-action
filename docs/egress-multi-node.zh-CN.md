@@ -29,12 +29,12 @@ Environment，例如 `egress-3`，添加：
 
 - `DEPLOY_SSH_KEY`：该服务器部署账号的 SSH 私钥；
 - `DEPLOY_KNOWN_HOSTS`：该服务器经过核对的 SSH host key；
-- `GHCR_USERNAME`：只用于拉取 Egress 镜像的 GitHub 账号；
-- `GHCR_READ_TOKEN`：仅授予 `read:packages` 的独立 Token；
 - 可选 required reviewers：用于生产部署人工审批。
 
 服务器地址、端口、用户名和公网 endpoint 是非敏感参数，统一放在版本控制的节点
-清单中。不要把 Egress Token、`.env`、TLS 私钥或 GHCR 密码写入 JSON。
+清单中。所有 Egress 共用的 GHCR 拉取账号放在 Repository secrets，不要在每个
+Environment 重复配置。不要把 Egress Token、`.env`、TLS 私钥或 GHCR 密码写入
+JSON。
 
 ## GitHub 配置清单
 
@@ -43,7 +43,8 @@ Repository Secrets：
 | 名称 | 用途 |
 | --- | --- |
 | `ONE_BROWSER_ACTION_TOKEN` | 读取私有 `one-browser-egress` 源码；必须配置 |
-| `GHCR_USERNAME` | 构建阶段登录 GHCR 的发布账号；建议显式配置 |
+| `GHCR_USERNAME` | 所有构建和远端拉取共用的 GHCR 账号；必须配置 |
+| `GHCR_READ_TOKEN` | 所有 Egress 服务器共用的拉取 Token，仅授予 `read:packages`；必须配置 |
 | `GHCR_TOKEN` | 发布镜像，授予 `write:packages`；建议与源码 Token 分开 |
 
 每个 `egress-N` Environment Secrets：
@@ -52,8 +53,9 @@ Repository Secrets：
 | --- | --- |
 | `DEPLOY_SSH_KEY` | 该节点 `gh-deploy` 用户的私钥 |
 | `DEPLOY_KNOWN_HOSTS` | 只包含该节点已核对的 SSH host key |
-| `GHCR_USERNAME` | 服务器拉取镜像使用的账号 |
-| `GHCR_READ_TOKEN` | 服务器拉取镜像使用的 `read:packages` Token |
+
+如果 Environment 中已经存在同名的 `GHCR_USERNAME` 或 `GHCR_READ_TOKEN`，请删除；
+GitHub 会优先使用 Environment secret，从而覆盖共用的 Repository secret。
 
 Egress workflow 当前不需要任何 GitHub Actions Variables（`vars.*`）。本地执行
 `make deploy-egress ...` 只需要仓库 `.env` 中的 `GH_TOKEN`，它用于调用 GitHub
@@ -143,8 +145,9 @@ Server 控制地址固定为 `https://browser.aicbe.com`，不再询问。节点
    `/opt/one-browser-egress/.env`。
 2. 将脚本打印的 SSH 指纹与从可信渠道取得的 host key 对比，把确认后的
    known-hosts 行写入 `DEPLOY_KNOWN_HOSTS`。
-3. 创建 `egress-1` GitHub Environment，设置 `DEPLOY_SSH_KEY`、
-   `DEPLOY_KNOWN_HOSTS`、`GHCR_USERNAME`、`GHCR_READ_TOKEN`。
+3. 创建 `egress-1` GitHub Environment，只设置 `DEPLOY_SSH_KEY` 和
+   `DEPLOY_KNOWN_HOSTS`。共用的 `GHCR_USERNAME`、`GHCR_READ_TOKEN` 只需在
+   Repository secrets 配置一次。
 4. 在 `.github/config/egress-targets.json` 中确认 host、endpoint、control URL 和
    用户均匹配，随后将 `enabled` 改为 `true`。
 5. 首次只部署这个节点：`make deploy-egress 1`。确认容器健康和公网 TLS/H2 检查

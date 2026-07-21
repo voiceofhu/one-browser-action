@@ -15,10 +15,10 @@ inputs:
     description: Pinned SSH known_hosts entry for the target
     required: true
   ghcr_username:
-    description: GitHub Container Registry pull username
+    description: Shared repository-level GitHub Container Registry pull username
     required: true
   ghcr_read_token:
-    description: GitHub Container Registry token limited to read:packages
+    description: Shared repository-level GitHub Container Registry token limited to read:packages
     required: true
 
 runs:
@@ -42,11 +42,11 @@ runs:
           exit 1
         fi
         if [ -z "$GHCR_USERNAME" ]; then
-          echo "GHCR_USERNAME is required in this target's GitHub Environment" >&2
+          echo "GHCR_USERNAME is required as a shared Repository secret" >&2
           exit 1
         fi
         if [ -z "$GHCR_READ_TOKEN" ]; then
-          echo "GHCR_READ_TOKEN is required in this target's GitHub Environment" >&2
+          echo "GHCR_READ_TOKEN is required as a shared Repository secret" >&2
           exit 1
         fi
 

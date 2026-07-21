@@ -94,22 +94,26 @@ sudo bash .github/actions/egress/setup-gh-deploy-user.sh
 `one-browser-deploy` 组，并把账号修复为禁止密码、允许公钥登录的状态。
 `authorized_keys` 由脚本完全管理，执行时会移除该账号原有的其他公钥。
 
-### 1. 在操作电脑生成部署密钥
+### 1. 在操作电脑确认固定部署密钥
 
-每台 Egress 使用不同的 ed25519 密钥：
-
-```bash
-ssh-keygen -t ed25519 \
-  -f ~/.ssh/egress-1-gh-deploy \
-  -C gh-deploy@egress-1
-```
-
-私钥 `~/.ssh/egress-1-gh-deploy` 后续写入 `egress-1` Environment 的
-`DEPLOY_SSH_KEY`。执行脚本时需要粘贴 `.pub` 公钥，可先复制：
+所有 Egress 统一使用本机 `~/.ssh/gh-deploy` 私钥对应的固定公钥。先确认本地私钥
+能够导出预期公钥：
 
 ```bash
-cat ~/.ssh/egress-1-gh-deploy.pub
+ssh-keygen -y -f ~/.ssh/gh-deploy
+ssh-keygen -y -f ~/.ssh/gh-deploy | ssh-keygen -lf -
 ```
+
+公钥必须是：
+
+```text
+ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAINAg0AqSzCO0PUitKd2Y/pHbH5lRxC1W2WddH9gB3yQ7 gh-deploy@one-browser
+```
+
+指纹必须是 `SHA256:h5YU+A3FMbSR4V0zKP96dCd41+e7p4tZTmHA1AXa5pU`。将
+`~/.ssh/gh-deploy` 私钥的完整内容写入每个 `egress-N` Environment 的
+`DEPLOY_SSH_KEY`。完整 bootstrap 询问公钥时也粘贴上面这一行。轮换该共享密钥时，
+必须同时更新所有节点的 `authorized_keys` 和所有 Environment secrets。
 
 ### 2. 准备 DNS 和网络
 

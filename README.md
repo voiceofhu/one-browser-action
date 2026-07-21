@@ -419,7 +419,8 @@ sudo bash .github/actions/egress/bootstrap-debian-amd64.sh
 To create or repair only the shared deployment account on an existing Debian
 host, run `.github/actions/egress/setup-gh-deploy-user.sh` as root after Docker
 is installed. This standalone script manages `authorized_keys` as exactly the
-repository's fixed `gh-deploy@one-browser` public key:
+repository's fixed `gh-deploy@one-browser` public key. Its matching private key
+is used as `DEPLOY_SSH_KEY` in every Egress Environment:
 
 ```bash
 sudo bash .github/actions/egress/setup-gh-deploy-user.sh

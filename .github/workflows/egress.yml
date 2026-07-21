@@ -1,4 +1,7 @@
 name: Egress Deploy
+run-name: >-
+  Egress ${{ inputs.deploy_targets }} ·
+  ${{ inputs.deploy && inputs.rollout || 'build-only' }}
 
 on:
   workflow_dispatch:

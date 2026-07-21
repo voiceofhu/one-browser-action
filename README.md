@@ -401,6 +401,8 @@ Compose file, but intentionally does not rewrite host DNS or firewall policy.
 
 ### Add another Egress deploy target
 
+#### Full host bootstrap
+
 For a fresh Debian amd64 host, use
 `.github/actions/egress/bootstrap-debian-amd64.sh`. It installs Docker Engine,
 Compose, Nginx, Certbot, and OpenSSH; creates `gh-deploy`; prepares the
@@ -416,6 +418,18 @@ arguments:
 sudo bash .github/actions/egress/bootstrap-debian-amd64.sh
 ```
 
+One-line fresh-host bootstrap from GitHub. The script is downloaded first so
+its interactive questions continue to read from the terminal:
+
+```bash
+curl -fsSL \
+  https://github.com/voiceofhu/one-browser-action/raw/refs/heads/main/.github/actions/egress/bootstrap-debian-amd64.sh \
+  -o /tmp/bootstrap-debian-amd64.sh && \
+  sudo bash /tmp/bootstrap-debian-amd64.sh
+```
+
+#### Deployment account only
+
 To create or repair only the shared deployment account on an existing Debian
 host, run `.github/actions/egress/setup-gh-deploy-user.sh` as root after Docker
 is installed. This standalone script manages `authorized_keys` as exactly the
@@ -426,9 +440,18 @@ is used as `DEPLOY_SSH_KEY` in every Egress Environment:
 sudo bash .github/actions/egress/setup-gh-deploy-user.sh
 ```
 
-The script interactively asks for the node number or ID, public domain,
-certificate email, and the public half of the deployment SSH key. The Server
-control URL is fixed at `https://browser.aicbe.com`. It generates the unique
+One-line account setup from GitHub:
+
+```bash
+curl -fsSL \
+  https://github.com/voiceofhu/one-browser-action/raw/refs/heads/main/.github/actions/egress/setup-gh-deploy-user.sh \
+  -o /tmp/setup-gh-deploy-user.sh && \
+  sudo bash /tmp/setup-gh-deploy-user.sh
+```
+
+The full bootstrap script interactively asks for the node number or ID, public
+domain, certificate email, and the public half of the deployment SSH key. The
+Server control URL is fixed at `https://browser.aicbe.com`. It generates the unique
 node token automatically, stores the registration copy as
 `/root/<node-id>.control-token` with mode `0600`, and never prints it. The script
 never pulls or starts Egress and never stores GHCR credentials.

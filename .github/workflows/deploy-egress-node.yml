@@ -19,15 +19,11 @@ on:
         description: Validated Egress target configuration
         type: string
         required: true
+    # DEPLOY_* secrets come from jobs.deploy.environment below. Declaring them
+    # here would make them caller-supplied workflow_call secrets instead.
     secrets:
       ONE_BROWSER_ACTION_TOKEN:
         description: Token used to checkout the private Egress source repository
-        required: false
-      DEPLOY_SSH_KEY:
-        description: Per-node SSH private key supplied by the job Environment
-        required: false
-      DEPLOY_KNOWN_HOSTS:
-        description: Per-node pinned SSH host key supplied by the job Environment
         required: false
       GHCR_USERNAME:
         description: Shared repository-level GHCR pull username

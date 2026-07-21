@@ -1,4 +1,6 @@
-.PHONY: deploy-server deploy-egress deploy-app debug-app check-token
+EGRESS_POSITIONAL_TARGET := $(filter 1 2 3 all,$(MAKECMDGOALS))
+
+.PHONY: deploy-server deploy-egress deploy-app debug-app check-token 1 2 3 all
 
 define require_gh_token
 if [ -z "$${GH_TOKEN:-}" ]; then \
@@ -138,9 +140,16 @@ deploy-server:
 
 deploy-egress:
 	@set -euo pipefail; \
+	target="$(strip $(EGRESS_POSITIONAL_TARGET))"; \
+	case "$$target" in \
+		1|2|3) deploy_targets="egress-$$target" ;; \
+		all) deploy_targets=all ;; \
+		*) echo "Usage: make deploy-egress <1|2|3|all>" >&2; exit 1 ;; \
+	esac; \
 	$(require_gh_token); \
 	$(normalize_gh_token); \
 	egress_ref="$(EGRESS_REF)"; \
+	rollout=full; \
 	deploy="$(DEPLOY)"; \
 	case "$$deploy" in false|0|no|n) deploy=false ;; *) deploy=true ;; esac; \
 	printf '%s\n' \
@@ -149,11 +158,19 @@ deploy-egress:
 		"  action_ref:        $(ACTION_REF)" \
 		"  egress_repository: $(EGRESS_REPOSITORY)" \
 		"  egress_ref:        $${egress_ref:-default branch}" \
+		"  deploy_targets:    $$deploy_targets" \
+		"  rollout:           $$rollout" \
 		"  deploy:            $$deploy"; \
 	case "$(DRY_RUN)" in true|1|yes|y) exit 0 ;; esac; \
-	payload="$$(ruby -rjson -e 'puts JSON.generate({ref: ARGV[0], inputs: {egress_ref: ARGV[1], deploy: ARGV[2] == "true"}})' "$(ACTION_REF)" "$$egress_ref" "$$deploy")"; \
+	payload="$$(ruby -rjson -e 'puts JSON.generate({ref: ARGV[0], inputs: {egress_ref: ARGV[1], deploy_targets: ARGV[2], rollout: ARGV[3], deploy: ARGV[4] == "true"}})' "$(ACTION_REF)" "$$egress_ref" "$$deploy_targets" "$$rollout" "$$deploy")"; \
 	$(call dispatch_workflow,egress.yml); \
 	echo "Triggered egress.yml in $(ACTION_REPOSITORY)"
+
+1 2 3 all:
+	@if [ -z "$(filter deploy-egress,$(MAKECMDGOALS))" ]; then \
+		echo "Use: make deploy-egress $@" >&2; \
+		exit 1; \
+	fi
 
 deploy-app:
 	@set -euo pipefail; \

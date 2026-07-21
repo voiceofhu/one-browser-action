@@ -1,0 +1,150 @@
+name: Deploy Egress Node
+description: Validate and deploy one Egress node with rollback-aware public verification
+
+inputs:
+  target_json:
+    description: Validated Egress target configuration
+    required: true
+  image_pinned_ref:
+    description: GHCR image pinned by manifest digest
+    required: true
+  deploy_ssh_key:
+    description: SSH private key for the target deploy user
+    required: true
+  deploy_known_hosts:
+    description: Pinned SSH known_hosts entry for the target
+    required: true
+  ghcr_username:
+    description: GitHub Container Registry pull username
+    required: true
+  ghcr_read_token:
+    description: GitHub Container Registry token limited to read:packages
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Validate deployment inputs
+      shell: bash
+      env:
+        DEPLOY_SSH_KEY: ${{ inputs.deploy_ssh_key }}
+        DEPLOY_KNOWN_HOSTS: ${{ inputs.deploy_known_hosts }}
+        GHCR_USERNAME: ${{ inputs.ghcr_username }}
+        GHCR_READ_TOKEN: ${{ inputs.ghcr_read_token }}
+      run: |
+        set -Eeuo pipefail
+        if [ -z "$DEPLOY_SSH_KEY" ]; then
+          echo "DEPLOY_SSH_KEY is required in this target's GitHub Environment" >&2
+          exit 1
+        fi
+        if [ -z "$DEPLOY_KNOWN_HOSTS" ]; then
+          echo "DEPLOY_KNOWN_HOSTS is required in this target's GitHub Environment" >&2
+          exit 1
+        fi
+        if [ -z "$GHCR_USERNAME" ]; then
+          echo "GHCR_USERNAME is required in this target's GitHub Environment" >&2
+          exit 1
+        fi
+        if [ -z "$GHCR_READ_TOKEN" ]; then
+          echo "GHCR_READ_TOKEN is required in this target's GitHub Environment" >&2
+          exit 1
+        fi
+
+    - name: Configure SSH
+      shell: bash
+      working-directory: ${{ github.workspace }}/egress
+      env:
+        DEPLOY_HOST: ${{ fromJSON(inputs.target_json).host }}
+        DEPLOY_PORT: ${{ fromJSON(inputs.target_json).port }}
+        DEPLOY_USER: ${{ fromJSON(inputs.target_json).user }}
+        DEPLOY_SSH_KEY: ${{ inputs.deploy_ssh_key }}
+        DEPLOY_KNOWN_HOSTS: ${{ inputs.deploy_known_hosts }}
+      run: bash .github/scripts/configure-ssh.sh
+
+    - name: Verify target identity
+      id: prepare
+      shell: bash
+      env:
+        SSH_HOST: one-browser-deploy
+        REMOTE_DIR: ${{ fromJSON(inputs.target_json).remote_dir }}
+        EXPECTED_EGRESS_ID: ${{ fromJSON(inputs.target_json).id }}
+        EXPECTED_PUBLIC_ENDPOINT: ${{ fromJSON(inputs.target_json).endpoint }}
+        EXPECTED_CONTROL_URL: ${{ fromJSON(inputs.target_json).control_url }}
+      run: bash "$GITHUB_ACTION_PATH/prepare-target.sh"
+
+    - name: Log target in to GitHub Container Registry
+      id: registry_login
+      shell: bash
+      env:
+        SSH_HOST: one-browser-deploy
+        USE_SUDO: ${{ fromJSON(inputs.target_json).use_sudo }}
+        GHCR_USERNAME: ${{ inputs.ghcr_username }}
+        GHCR_READ_TOKEN: ${{ inputs.ghcr_read_token }}
+      run: bash "$GITHUB_ACTION_PATH/registry-auth.sh"
+
+    - name: Deploy digest-pinned image with Docker Compose
+      id: deploy
+      shell: bash
+      working-directory: ${{ github.workspace }}/egress
+      env:
+        SSH_HOST: one-browser-deploy
+        REMOTE_DIR: ${{ fromJSON(inputs.target_json).remote_dir }}
+        DOCKER_IMAGE: ${{ inputs.image_pinned_ref }}
+        COMPOSE_PROJECT_NAME: ${{ fromJSON(inputs.target_json).compose_project_name }}
+        COMPOSE_SERVICE_NAME: ${{ fromJSON(inputs.target_json).compose_service_name }}
+        CONTAINER_NAME: ${{ fromJSON(inputs.target_json).container_name }}
+        CONTROL_NETWORK: ${{ fromJSON(inputs.target_json).control_network }}
+        USE_SUDO: ${{ fromJSON(inputs.target_json).use_sudo }}
+        PULL_IMAGE: "1"
+        RUN_HEALTHCHECK: "1"
+        SHOW_LOGS: "1"
+        LOG_TAIL: ${{ fromJSON(inputs.target_json).log_tail }}
+        LOG_FOLLOW_SECONDS: ${{ fromJSON(inputs.target_json).log_follow_seconds }}
+      run: bash .github/scripts/deploy-docker-compose.sh
+
+    - name: Verify public Egress endpoint
+      id: public_check
+      if: ${{ fromJSON(inputs.target_json).public_check }}
+      shell: bash
+      env:
+        EGRESS_ENDPOINT: ${{ fromJSON(inputs.target_json).endpoint }}
+      run: node "$GITHUB_ACTION_PATH/verify-endpoint.mjs"
+
+    - name: Restore previous deployment after public check failure
+      id: rollback
+      if: ${{ failure() && steps.deploy.outcome == 'success' && steps.public_check.outcome == 'failure' }}
+      shell: bash
+      env:
+        SSH_HOST: one-browser-deploy
+        REMOTE_DIR: ${{ fromJSON(inputs.target_json).remote_dir }}
+        COMPOSE_PROJECT_NAME: ${{ fromJSON(inputs.target_json).compose_project_name }}
+        COMPOSE_SERVICE_NAME: ${{ fromJSON(inputs.target_json).compose_service_name }}
+        CONTAINER_NAME: ${{ fromJSON(inputs.target_json).container_name }}
+        CONTROL_NETWORK: ${{ fromJSON(inputs.target_json).control_network }}
+        USE_SUDO: ${{ fromJSON(inputs.target_json).use_sudo }}
+        LOG_TAIL: ${{ fromJSON(inputs.target_json).log_tail }}
+      run: bash "$GITHUB_ACTION_PATH/rollback-target.sh"
+
+    - name: Remove staged rollback metadata
+      if: >-
+        always() &&
+        steps.prepare.outcome == 'success' &&
+        (steps.public_check.outcome != 'failure' || steps.rollback.outcome == 'success')
+      continue-on-error: true
+      shell: bash
+      env:
+        SSH_HOST: one-browser-deploy
+        REMOTE_DIR: ${{ fromJSON(inputs.target_json).remote_dir }}
+      run: >-
+        ssh "$SSH_HOST"
+        "rm -f -- '$REMOTE_DIR/docker-compose.yml.action-previous'"
+
+    - name: Log target out of GitHub Container Registry
+      if: ${{ always() && steps.registry_login.outcome == 'success' }}
+      continue-on-error: true
+      shell: bash
+      env:
+        SSH_HOST: one-browser-deploy
+        REGISTRY_ACTION: logout
+        USE_SUDO: ${{ fromJSON(inputs.target_json).use_sudo }}
+      run: bash "$GITHUB_ACTION_PATH/registry-auth.sh"

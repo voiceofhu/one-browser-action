@@ -38,3 +38,18 @@ else
 fi
 
 echo "Published commit-addressed image $revision_ref"
+
+manifest_json=$(docker buildx imagetools inspect \
+  "$revision_ref" \
+  --format '{{json .Manifest}}')
+image_digest=$(jq -er '
+  .digest
+  | select(type == "string" and test("^sha256:[a-f0-9]{64}$"))
+' <<<"$manifest_json")
+image_pinned_ref="$IMAGE@$image_digest"
+
+if [ -n "${GITHUB_OUTPUT:-}" ]; then
+  printf 'image_pinned_ref=%s\n' "$image_pinned_ref" >> "$GITHUB_OUTPUT"
+fi
+
+echo "Pinned deploy image $image_pinned_ref"

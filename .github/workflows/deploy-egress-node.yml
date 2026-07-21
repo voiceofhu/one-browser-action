@@ -1,0 +1,68 @@
+name: Deploy Egress Node
+
+on:
+  workflow_call:
+    inputs:
+      egress_repository:
+        description: Egress source repository
+        type: string
+        required: true
+      egress_sha:
+        description: Immutable Egress source revision
+        type: string
+        required: true
+      image_pinned_ref:
+        description: GHCR image pinned by manifest digest
+        type: string
+        required: true
+      target_json:
+        description: Validated Egress target configuration
+        type: string
+        required: true
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  deploy:
+    name: Deploy ${{ fromJSON(inputs.target_json).id }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment:
+      name: ${{ fromJSON(inputs.target_json).environment }}
+      url: https://${{ fromJSON(inputs.target_json).endpoint }}
+    concurrency:
+      group: one-browser-egress-${{ fromJSON(inputs.target_json).id }}-deploy
+      cancel-in-progress: false
+      queue: max
+
+    steps:
+      - name: Checkout Egress
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.egress_repository }}
+          ref: ${{ inputs.egress_sha }}
+          path: egress
+          token: ${{ secrets.ONE_BROWSER_ACTION_TOKEN || github.token }}
+          clean: true
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Checkout deployment action
+        uses: actions/checkout@v4
+        with:
+          path: action
+          clean: true
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Deploy Egress node
+        uses: ./action/.github/actions/egress
+        with:
+          target_json: ${{ inputs.target_json }}
+          image_pinned_ref: ${{ inputs.image_pinned_ref }}
+          deploy_ssh_key: ${{ secrets.DEPLOY_SSH_KEY }}
+          deploy_known_hosts: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+          ghcr_username: ${{ secrets.GHCR_USERNAME }}
+          ghcr_read_token: ${{ secrets.GHCR_READ_TOKEN }}

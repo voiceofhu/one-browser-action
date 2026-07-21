@@ -11,6 +11,19 @@ on:
         type: boolean
         required: false
         default: true
+      deploy_targets:
+        description: Comma-separated target IDs from egress-targets.json, or all enabled targets
+        type: string
+        required: false
+        default: all
+      rollout:
+        description: Deploy only the first selected wave or continue through every selected wave
+        type: choice
+        required: false
+        default: full
+        options:
+          - canary
+          - full
 
 permissions:
   contents: read
@@ -144,6 +157,8 @@ jobs:
       needs.resolve.result == 'success' &&
       (needs.resolve.outputs.should_build == 'false' || needs.build.result == 'success')
     runs-on: ubuntu-latest
+    outputs:
+      image_pinned_ref: ${{ steps.manifest.outputs.image_pinned_ref }}
     concurrency:
       group: one-browser-egress-manifest
       cancel-in-progress: false
@@ -169,6 +184,7 @@ jobs:
           password: ${{ secrets.GHCR_TOKEN || secrets.ONE_BROWSER_ACTION_TOKEN || github.token }}
 
       - name: Publish multi-platform image
+        id: manifest
         shell: bash
         env:
           IMAGE: ${{ needs.resolve.outputs.image_ref }}
@@ -177,37 +193,19 @@ jobs:
           SHOULD_BUILD: ${{ needs.resolve.outputs.should_build }}
         run: bash action/.github/scripts/publish-egress-manifests.sh
 
-  deploy:
-    name: Deploy Egress
-    needs:
-      - resolve
-      - publish
-    if: >-
-      always() &&
-      !cancelled() &&
-      needs.resolve.result == 'success' &&
-      needs.resolve.outputs.deploy == 'true' &&
-      needs.publish.result == 'success'
+  targets:
+    name: Resolve deploy targets
+    needs: resolve
+    if: needs.resolve.outputs.deploy == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 15
-    concurrency:
-      group: one-browser-egress-production-deploy
-      cancel-in-progress: false
-      queue: max
+    outputs:
+      canary_matrix: ${{ steps.targets.outputs.canary_matrix }}
+      canary_count: ${{ steps.targets.outputs.canary_count }}
+      rollout_matrix: ${{ steps.targets.outputs.rollout_matrix }}
+      rollout_count: ${{ steps.targets.outputs.rollout_count }}
 
     steps:
-      - name: Checkout Egress
-        uses: actions/checkout@v4
-        with:
-          repository: ${{ needs.resolve.outputs.egress_repository }}
-          ref: ${{ needs.resolve.outputs.egress_sha }}
-          path: egress
-          token: ${{ secrets.ONE_BROWSER_ACTION_TOKEN || github.token }}
-          clean: true
-          fetch-depth: 1
-          persist-credentials: false
-
-      - name: Checkout workflow scripts
+      - name: Checkout workflow configuration
         uses: actions/checkout@v4
         with:
           path: action
@@ -215,56 +213,66 @@ jobs:
           fetch-depth: 1
           persist-credentials: false
 
-      - name: Validate deployment secrets
+      - name: Resolve enabled targets
+        id: targets
         shell: bash
         env:
-          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
-          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
-          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
-          DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
-        run: |
-          missing=0
-          for name in DEPLOY_HOST DEPLOY_USER DEPLOY_SSH_KEY DEPLOY_KNOWN_HOSTS; do
-            if [ -z "$(eval "printf '%s' \"\$$name\"")" ]; then
-              echo "$name is required" >&2
-              missing=1
-            fi
-          done
-          exit "$missing"
+          EGRESS_TARGETS_INPUT: ${{ inputs.deploy_targets }}
+          EGRESS_ROLLOUT_INPUT: ${{ inputs.rollout }}
+        run: >-
+          bash action/.github/scripts/resolve-egress-targets.sh
+          action/.github/config/egress-targets.json
 
-      - name: Configure SSH
-        shell: bash
-        working-directory: egress
-        env:
-          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
-          DEPLOY_PORT: ${{ secrets.DEPLOY_PORT || '22' }}
-          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
-          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
-          DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
-        run: bash .github/scripts/configure-ssh.sh
+  deploy-canary:
+    name: Canary ${{ matrix.target.id }}
+    needs:
+      - resolve
+      - publish
+      - targets
+    if: >-
+      always() &&
+      !cancelled() &&
+      needs.resolve.result == 'success' &&
+      needs.resolve.outputs.deploy == 'true' &&
+      needs.publish.result == 'success' &&
+      needs.targets.result == 'success' &&
+      needs.targets.outputs.canary_count != '0'
+    strategy:
+      fail-fast: true
+      max-parallel: 1
+      matrix: ${{ fromJSON(needs.targets.outputs.canary_matrix) }}
+    uses: ./.github/workflows/deploy-egress-node.yml
+    with:
+      egress_repository: ${{ needs.resolve.outputs.egress_repository }}
+      egress_sha: ${{ needs.resolve.outputs.egress_sha }}
+      image_pinned_ref: ${{ needs.publish.outputs.image_pinned_ref }}
+      target_json: ${{ toJSON(matrix.target) }}
+    secrets: inherit
 
-      - name: Deploy image with Docker Compose
-        shell: bash
-        working-directory: egress
-        env:
-          SSH_HOST: one-browser-deploy
-          REMOTE_DIR: /opt/one-browser-egress
-          DOCKER_IMAGE: ${{ needs.resolve.outputs.image_ref }}:${{ needs.resolve.outputs.image_revision_tag }}
-          COMPOSE_PROJECT_NAME: one-browser-egress
-          COMPOSE_SERVICE_NAME: egress
-          CONTAINER_NAME: one-browser-egress
-          CONTROL_NETWORK: ${{ vars.DEPLOY_CONTROL_NETWORK || 'one-browser-control' }}
-          USE_SUDO: ${{ vars.DEPLOY_USE_SUDO || '0' }}
-          PULL_IMAGE: "1"
-          RUN_HEALTHCHECK: "1"
-          SHOW_LOGS: "1"
-          LOG_TAIL: ${{ vars.DEPLOY_EGRESS_LOG_TAIL || '120' }}
-          LOG_FOLLOW_SECONDS: ${{ vars.DEPLOY_EGRESS_LOG_FOLLOW_SECONDS || '5' }}
-        run: bash .github/scripts/deploy-docker-compose.sh
-
-      - name: Verify public Egress endpoint
-        if: ${{ vars.DEPLOY_EGRESS_CHECK != 'false' }}
-        shell: bash
-        env:
-          EGRESS_ENDPOINT: ${{ vars.DEPLOY_EGRESS_ENDPOINT || 'egress.aicbe.com:27600' }}
-        run: node action/.github/scripts/verify-egress.mjs
+  deploy-rollout:
+    name: Rollout ${{ matrix.target.id }}
+    needs:
+      - resolve
+      - publish
+      - targets
+      - deploy-canary
+    if: >-
+      always() &&
+      !cancelled() &&
+      needs.resolve.result == 'success' &&
+      needs.resolve.outputs.deploy == 'true' &&
+      needs.publish.result == 'success' &&
+      needs.targets.result == 'success' &&
+      needs.deploy-canary.result == 'success' &&
+      needs.targets.outputs.rollout_count != '0'
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix: ${{ fromJSON(needs.targets.outputs.rollout_matrix) }}
+    uses: ./.github/workflows/deploy-egress-node.yml
+    with:
+      egress_repository: ${{ needs.resolve.outputs.egress_repository }}
+      egress_sha: ${{ needs.resolve.outputs.egress_sha }}
+      image_pinned_ref: ${{ needs.publish.outputs.image_pinned_ref }}
+      target_json: ${{ toJSON(matrix.target) }}
+    secrets: inherit

@@ -416,6 +416,15 @@ arguments:
 sudo bash .github/actions/egress/bootstrap-debian-amd64.sh
 ```
 
+To create or repair only the shared deployment account on an existing Debian
+host, run `.github/actions/egress/setup-gh-deploy-user.sh` as root after Docker
+is installed. This standalone script manages `authorized_keys` as exactly the
+repository's fixed `gh-deploy@one-browser` public key:
+
+```bash
+sudo bash .github/actions/egress/setup-gh-deploy-user.sh
+```
+
 The script interactively asks for the node number or ID, public domain,
 certificate email, and the public half of the deployment SSH key. The Server
 control URL is fixed at `https://browser.aicbe.com`. It generates the unique

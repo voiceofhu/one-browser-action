@@ -279,10 +279,16 @@ create_deploy_user() {
       "$DEPLOY_USER"
   fi
 
-  passwd --lock "$DEPLOY_USER" >/dev/null
+  # Keep password authentication impossible without locking the account itself.
+  # OpenSSH rejects every authentication method when the shadow field starts
+  # with "!", including otherwise valid public keys.
+  usermod --password '*NP*' "$DEPLOY_USER"
+  chage --expiredate -1 --inactive -1 --maxdays -1 "$DEPLOY_USER"
   usermod --append --groups "docker,$DEPLOY_GROUP" "$DEPLOY_USER"
   primary_group=$(id -gn "$DEPLOY_USER")
 
+  chown "$DEPLOY_USER:$primary_group" "$DEPLOY_HOME"
+  chmod 0750 "$DEPLOY_HOME"
   install -d -m 0700 -o "$DEPLOY_USER" -g "$primary_group" "$DEPLOY_HOME/.ssh"
   authorized_keys="$DEPLOY_HOME/.ssh/authorized_keys"
   touch "$authorized_keys"
@@ -605,7 +611,14 @@ verify_control_plane() {
 }
 
 verify_deploy_contract() {
+  local password_field
+
   step 'Verifying GitHub Actions host permissions'
+  password_field=$(getent shadow "$DEPLOY_USER" | cut -d: -f2)
+  [[ "$password_field" == '*NP*' ]] || \
+    die "$DEPLOY_USER must use the non-login password marker *NP* so SSH public-key authentication remains available"
+  grep -Fqx -- "$ssh_public_key" "$DEPLOY_HOME/.ssh/authorized_keys" || \
+    die "$DEPLOY_USER authorized_keys does not contain the requested SSH public key"
   docker network inspect "$CONTROL_NETWORK" >/dev/null 2>&1 || \
     docker network create "$CONTROL_NETWORK" >/dev/null
   runuser -u "$DEPLOY_USER" -- test -w "$DEPLOY_DIR" || \

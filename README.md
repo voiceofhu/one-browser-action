@@ -405,9 +405,12 @@ For a fresh Debian amd64 host, use
 `.github/actions/egress/bootstrap-debian-amd64.sh`. It installs Docker Engine,
 Compose, Nginx, Certbot, and OpenSSH; creates `gh-deploy`; prepares the
 persistent directory, `.env`, public certificate, and renewal hook; and leaves
-the first container deployment to this Action. Certificate issuance always
-uses a domain-specific Nginx webroot virtual host, so existing Nginx websites
-remain on the same listener. Run it without configuration arguments:
+the first container deployment to this Action. The deployment account has an
+impossible password marker instead of a locked shadow entry, so OpenSSH accepts
+its configured public key while password login remains unavailable. Certificate
+issuance always uses a domain-specific Nginx webroot virtual host, so existing
+Nginx websites remain on the same listener. Run it without configuration
+arguments:
 
 ```bash
 sudo bash .github/actions/egress/bootstrap-debian-amd64.sh

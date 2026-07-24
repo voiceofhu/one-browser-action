@@ -1,6 +1,6 @@
 EGRESS_POSITIONAL_TARGET := $(filter 1 2 3 all,$(MAKECMDGOALS))
 
-.PHONY: deploy-server deploy-egress deploy-app debug-app check-token 1 2 3 all
+.PHONY: deploy-server egress deploy-egress deploy-app debug-app check-token 1 2 3 all
 
 define require_gh_token
 if [ -z "$${GH_TOKEN:-}" ]; then \
@@ -103,6 +103,7 @@ check-token:
 	check_api "egress repository" "repos/$(EGRESS_REPOSITORY)"; \
 	check_api "app repository" "repos/$(APP_REPOSITORY)"; \
 	check_api "server workflow" "repos/$(ACTION_REPOSITORY)/actions/workflows/server.yml"; \
+	check_api "egress release workflow" "repos/$(ACTION_REPOSITORY)/actions/workflows/egress-release.yml"; \
 	check_api "egress workflow" "repos/$(ACTION_REPOSITORY)/actions/workflows/egress.yml"; \
 	check_api "app workflow" "repos/$(ACTION_REPOSITORY)/actions/workflows/app.yml"; \
 	check_api "app debug workflow" "repos/$(ACTION_REPOSITORY)/actions/workflows/app-debug.yml"; \
@@ -137,6 +138,25 @@ deploy-server:
 	payload="$$(ruby -rjson -e 'puts JSON.generate({ref: ARGV[0], inputs: {server_repository: ARGV[1], server_ref: ARGV[2], version_tag: ARGV[3], web_repository: ARGV[4], web_ref: ARGV[5], image_name: ARGV[6], force: ARGV[7] == "true", deploy: ARGV[8] == "true"}})' "$(ACTION_REF)" "$(SERVER_REPOSITORY)" "$$server_ref" "$$tag" "$(WEB_REPOSITORY)" "$(WEB_REF)" "$$image_name" "$$force" "$$deploy")"; \
 	$(call dispatch_workflow,server.yml); \
 	echo "Triggered server.yml in $(ACTION_REPOSITORY)"
+
+egress:
+	@set -euo pipefail; \
+	$(require_gh_token); \
+	$(normalize_gh_token); \
+	tag="$(VERSION_TAG)"; \
+	if [ -n "$$tag" ] && [[ "$$tag" != v* ]]; then tag="v$$tag"; fi; \
+	egress_ref="$(EGRESS_REF)"; \
+	printf '%s\n' \
+		"Egress package inputs:" \
+		"  action_repository: $(ACTION_REPOSITORY)" \
+		"  action_ref:        $(ACTION_REF)" \
+		"  egress_repository: $(EGRESS_REPOSITORY)" \
+		"  egress_ref:        $${egress_ref:-default branch}" \
+		"  version_tag:       $${tag:-Cargo.toml}"; \
+	case "$(DRY_RUN)" in true|1|yes|y) exit 0 ;; esac; \
+	payload="$$(ruby -rjson -e 'puts JSON.generate({ref: ARGV[0], inputs: {egress_repository: ARGV[1], egress_ref: ARGV[2], version_tag: ARGV[3]}})' "$(ACTION_REF)" "$(EGRESS_REPOSITORY)" "$$egress_ref" "$$tag")"; \
+	$(call dispatch_workflow,egress-release.yml); \
+	echo "Triggered egress-release.yml in $(ACTION_REPOSITORY)"
 
 deploy-egress:
 	@set -euo pipefail; \

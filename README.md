@@ -15,10 +15,11 @@ stay private:
 Keep source repositories private, but run the heavy CI/CD implementation here.
 The source repositories do not need tag-trigger workflows. Their local
 `make push-tag` targets push the tag first, then call `make deploy-server`,
-`make deploy-egress`, or `make deploy-app` in this repository with the pushed
-version and exact source commit SHA. Egress commands add a positional target,
-for example `make deploy-egress 3`. This repository then checks out that
-immutable source revision and runs the build.
+`make egress`, `make deploy-egress`, or `make deploy-app` in this repository
+with the pushed version and exact source commit SHA. `make egress` packages
+release assets; deployment commands add a positional target, for example
+`make deploy-egress 3`. This repository then checks out that immutable source
+revision and runs the build.
 
 ## Workflows
 
@@ -64,6 +65,27 @@ Image tags pushed:
 
 Production deploys always use the combined immutable SHA tag rather than the
 optional version or `latest` aliases.
+
+### Egress Release
+
+File: `.github/workflows/egress-release.yml`
+
+This workflow is dispatched by `make egress`. It resolves an immutable
+`one-browser-egress` commit, verifies the optional requested version against
+that commit's `Cargo.toml`, and publishes an immutable
+`egress-v<version>` Release in `voiceofhu/one-browser-action`.
+
+Release assets:
+
+- `install.sh`
+- `one-browser-egress-linux-amd64`
+- `one-browser-egress-linux-arm64`
+- `one-browser-egress-<version>.tar.gz`
+- `SHA256SUMS`
+
+If that Release already exists, its recorded source SHA and complete asset list
+must match. The workflow never replaces existing assets. The same complete
+`dist` directory is also retained as an Action run artifact for 30 days.
 
 ### Egress Deploy
 
@@ -160,9 +182,9 @@ make check-token
 For a fine-grained personal access token, select the `voiceofhu` organization
 and allow repository access to `one-browser-action`, `one-browser-server`,
 `one-browser-egress`, `one-browser-web`, and `one-browser-app`. It needs
-`Contents: read` for source repositories and
-`Actions: read/write` for `one-browser-action`. A classic token should have the
-`repo` scope.
+`Contents: read` for source repositories, `Contents: write` for releases in
+`one-browser-action`, and `Actions: read/write` for `one-browser-action`. A
+classic token should have the `repo` scope.
 
 Trigger a server release:
 
@@ -191,6 +213,22 @@ Build without deploying:
 ```bash
 make deploy-server TAG=v26.709.1542 DEPLOY=false
 ```
+
+Package Egress installer and native Linux binaries:
+
+```bash
+make egress
+```
+
+By default, this resolves the latest Egress default-branch commit and reads its
+version from `Cargo.toml`. Pin both when preparing a specific package:
+
+```bash
+make egress TAG=v26.724.1 EGRESS_REF=v26.724.1
+```
+
+The resulting Action release is named `egress-v26.724.1`. Packaging and node
+deployment are separate operations.
 
 Deploy Egress node 3:
 
@@ -257,7 +295,7 @@ dispatch. GitHub Actions uses these Repository secrets:
 
 | Secret | Purpose |
 | --- | --- |
-| `GH_TOKEN` | PAT used to read the private source repositories, publish App Releases, and read/write the private GHCR images. |
+| `GH_TOKEN` | PAT used to read private source repositories, publish App/Egress Releases, and read/write private GHCR images. |
 | `DEPLOY_USER` | SSH account used for Server deployment; currently `gh-deploy`. |
 
 The workflows resolve the GitHub login associated with `GH_TOKEN` at runtime,

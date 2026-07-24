@@ -62,6 +62,11 @@ Egress workflow 当前不需要任何 GitHub Actions Variables（`vars.*`）。�
 Workflow Dispatch API。Action 运行时使用 Repository `GH_TOKEN` 登录私有 GHCR，
 完成拉取后会退出登录，并且不会把 Token 传给 Egress 容器。
 
+安装脚本和原生二进制也统一由 `one-browser-action` 打包。在本仓库执行
+`make egress` 会触发 `.github/workflows/egress-release.yml`，从固定的 Egress
+commit 构建 amd64/arm64 二进制，并在 Action 仓库发布
+`egress-v<版本>` Release。Egress 源码仓库不保存 GitHub workflow。
+
 Server deploy job 绑定 `egress-3` Environment，复用其中的
 `DEPLOY_SSH_KEY`、`DEPLOY_KNOWN_HOSTS`，连接同一台
 `51.68.38.135:22` 服务器；不再单独配置 Server 的 Repository 级 SSH 私钥和

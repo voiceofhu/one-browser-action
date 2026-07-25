@@ -2,7 +2,7 @@
 
 Egress 的发布和节点接入已经分开：
 
-- `make egress` 只负责构建并上传运行产物。
+- `make deploy-egress` 只负责构建并上传运行产物。
 - Server 负责创建节点 ID、签发一次性接入 Token，并生成安装与卸载命令。
 - 节点主动下载公开产物并连接 Server。
 - GitHub Actions 不再通过 SSH 部署 Egress 节点。
@@ -24,7 +24,7 @@ Action 仓库的 Repository `GH_TOKEN` 需要：
 执行：
 
 ```bash
-make egress
+make deploy-egress
 ```
 
 该命令使用同一个 Egress ref，分别触发：
@@ -44,7 +44,7 @@ make egress
 固定 Egress 版本时使用：
 
 ```bash
-make egress TAG=v26.725.1317 EGRESS_REF=v26.725.1317
+make deploy-egress TAG=v26.725.1317 EGRESS_REF=v26.725.1317
 ```
 
 公开的跨架构安装脚本是仓库根目录的普通文件：

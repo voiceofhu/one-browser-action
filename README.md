@@ -15,8 +15,8 @@ stay private:
 Keep source repositories private, but run the heavy CI/CD implementation here.
 The source repositories do not need tag-trigger workflows. Their local
 `make push-tag` targets push the tag first, then call `make deploy-server`,
-`make egress`, or `make deploy-app` in this repository with the pushed version
-and exact source commit SHA. `make egress` publishes both native Release assets
+`make deploy-egress`, or `make deploy-app` in this repository with the pushed version
+and exact source commit SHA. `make deploy-egress` publishes both native Release assets
 and the multi-platform Docker image. Egress node installation is performed by
 the Server-generated `install.sh` command, not by an Action SSH deployment
 target.
@@ -70,7 +70,7 @@ optional version or `latest` aliases.
 
 File: `.github/workflows/egress-release.yml`
 
-This workflow is dispatched by `make egress` alongside the build-only Egress
+This workflow is dispatched by `make deploy-egress` alongside the build-only Egress
 image workflow. It resolves an immutable `one-browser-egress` commit, verifies
 the optional requested version against that commit's `Cargo.toml`, and
 publishes an immutable `egress-v<version>` Release in
@@ -119,7 +119,7 @@ editing and testing the scripts.
 
 File: `.github/workflows/egress.yml`
 
-`make egress` dispatches this image-only workflow after dispatching the native
+`make deploy-egress` dispatches this image-only workflow after dispatching the native
 Release workflow. It resolves the same Egress ref and builds or locates the
 corresponding GHCR image without connecting to any node.
 
@@ -219,14 +219,14 @@ make deploy-server TAG=v26.709.1542 DEPLOY=false
 Package native Linux binaries and publish the multi-platform Docker image:
 
 ```bash
-make egress
+make deploy-egress
 ```
 
 By default, this resolves the latest Egress default-branch commit and reads its
 version from `Cargo.toml`. Pin both when preparing a specific package:
 
 ```bash
-make egress TAG=v26.724.1 EGRESS_REF=v26.724.1
+make deploy-egress TAG=v26.724.1 EGRESS_REF=v26.724.1
 ```
 
 The resulting Action release is named `egress-v26.724.1`. The root

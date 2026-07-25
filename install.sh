@@ -17,6 +17,23 @@ log() {
   printf '==> %s\n' "$*"
 }
 
+print_uninstall_command() {
+  cat <<'EOF'
+( set -o pipefail; r=; if [ "$(id -u)" -ne 0 ]; then command -v sudo >/dev/null 2>&1 || { echo 'root privileges or sudo are required' >&2; exit 1; }; r=sudo; fi; curl -fsSL --proto '=https' --proto-redir '=https' --tlsv1.2 'https://raw.githubusercontent.com/voiceofhu/one-browser-action/main/uninstall.sh' | $r bash )
+EOF
+}
+
+die_runtime_switch() {
+  local existing_runtime=$1
+  local requested_runtime=$2
+
+  printf 'Error: Egress is installed in %s mode; uninstall it before switching to %s mode.\n' \
+    "$existing_runtime" "$requested_runtime" >&2
+  printf 'Run the complete uninstall command:\n' >&2
+  print_uninstall_command >&2
+  exit 1
+}
+
 show_help() {
   cat <<'EOF'
 Install and enroll one One Browser Egress node.
@@ -1461,13 +1478,13 @@ installer_main() {
   installation_state=$(detect_installation_state)
   if existing_runtime=$(installed_runtime 2>/dev/null); then
     [ "$existing_runtime" = "$INSTALL_MODE" ] ||
-      die "Egress is installed in $existing_runtime mode; run uninstall.sh before switching to $INSTALL_MODE mode"
+      die_runtime_switch "$existing_runtime" "$INSTALL_MODE"
   elif [ -e "$COMPOSE_FILE" ]; then
     [ "$INSTALL_MODE" = docker ] ||
-      die "A Docker Egress installation exists; run uninstall.sh before switching to native mode"
+      die_runtime_switch docker native
   elif [ -e "$NATIVE_SERVICE_FILE" ] || [ -e "$NATIVE_BINARY" ]; then
     [ "$INSTALL_MODE" = native ] ||
-      die "A native Egress installation exists; run uninstall.sh before switching to Docker mode"
+      die_runtime_switch native docker
   fi
   ensure_install_directories
   case "$installation_state" in

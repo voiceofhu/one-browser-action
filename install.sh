@@ -3,7 +3,7 @@
 # Public One Browser Egress installation entrypoint for Debian and Ubuntu.
 # This source lives at the public one-browser-action repository root. Keep it
 # self-contained: every invocation detects local state before a fresh install
-# or an in-place reinstall.
+# or an in-place update.
 
 set +x
 set -Eeuo pipefail
@@ -50,6 +50,9 @@ Options:
   -h, --help          Show this help
 
 Run as root. The generated Web command uses sudo automatically.
+Running the generated command again keeps the enrolled node identity. It exits
+without changing the runtime when the requested version is already installed,
+or updates the existing runtime in place when the requested version differs.
 EOF
 }
 
@@ -495,6 +498,30 @@ installed_runtime() {
   printf '%s' "$runtime"
 }
 
+installed_version() {
+  local normalized version
+
+  [ -f "$INSTALL_RECORD" ] && [ ! -L "$INSTALL_RECORD" ] || return 1
+  version=$(read_env_value "$INSTALL_RECORD" version) || return 1
+  normalized=$(normalize_version "$version") || return 1
+  [ "$normalized" != latest ] || return 1
+  printf '%s' "$normalized"
+}
+
+runtime_installation_complete() {
+  case "$INSTALL_MODE" in
+    native)
+      [ -f "$NATIVE_BINARY" ] && [ ! -L "$NATIVE_BINARY" ] &&
+        [ -x "$NATIVE_BINARY" ] &&
+        [ -f "$NATIVE_SERVICE_FILE" ] && [ ! -L "$NATIVE_SERVICE_FILE" ]
+      ;;
+    docker)
+      [ -f "$COMPOSE_FILE" ] && [ ! -L "$COMPOSE_FILE" ]
+      ;;
+    *) return 1 ;;
+  esac
+}
+
 configure_docker_repository() {
   local architecture key_tmp source_tmp
 
@@ -615,11 +642,7 @@ prepare_runtime_config() {
     return
   fi
   if [ "$REQUESTED_VERSION" = latest ]; then
-    if [ "$INSTALL_MODE" = native ]; then
-      RESOLVED_VERSION=$(resolve_latest_version)
-    else
-      RESOLVED_VERSION=latest
-    fi
+    RESOLVED_VERSION=$(resolve_latest_version)
   else
     RESOLVED_VERSION=$REQUESTED_VERSION
   fi
@@ -629,7 +652,7 @@ prepare_runtime_config() {
 }
 
 download_native_binary() {
-  local asset checksum binary_tmp checksums_tmp release_base
+  local asset checksum binary_tmp checksums_tmp release_base target_tmp
 
   asset="one-browser-egress-$HOST_PLATFORM"
   release_base="https://github.com/voiceofhu/one-browser-action/releases/download/egress-v$RESOLVED_VERSION"
@@ -646,7 +669,9 @@ download_native_binary() {
     die "Release checksums do not contain a valid digest for $asset"
   printf '%s  %s\n' "$checksum" "$binary_tmp" | sha256sum -c - >/dev/null ||
     die "Downloaded Egress binary checksum does not match"
-  install -m 0755 -o root -g root "$binary_tmp" "$NATIVE_BINARY"
+  target_tmp=$(mktemp "$(dirname "$NATIVE_BINARY")/.one-browser-egress.tmp.XXXXXX")
+  install -m 0755 -o root -g root "$binary_tmp" "$target_tmp"
+  mv -f "$target_tmp" "$NATIVE_BINARY"
   rm -f "$binary_tmp" "$checksums_tmp"
 }
 
@@ -1319,6 +1344,42 @@ start_docker_egress() {
   wait_for_health
 }
 
+update_existing_installation() {
+  local installed=
+
+  load_existing_env "$ENV_FILE"
+  prepare_runtime_config
+  installed=$(installed_version 2>/dev/null || true)
+  if [ "$installed" = "$RESOLVED_VERSION" ] &&
+    runtime_installation_complete; then
+    CONFIG_CONTROL_TOKEN=
+    log "One Browser Egress $RESOLVED_VERSION is already the requested version"
+    printf 'One Browser Egress %s (%s, %s) is already up to date at %s.\n' \
+      "$CONFIG_EGRESS_ID" "$INSTALL_MODE" "$RESOLVED_VERSION" "$CONFIG_PUBLIC_ENDPOINT"
+    return 0
+  fi
+
+  if [ "$installed" = "$RESOLVED_VERSION" ]; then
+    log "The requested version is recorded, but runtime files are incomplete; repairing it in place"
+  elif [ -n "$installed" ]; then
+    log "Updating One Browser Egress from $installed to $RESOLVED_VERSION in place"
+  else
+    log "The installed Egress version is unknown; overwriting the runtime with $RESOLVED_VERSION"
+  fi
+  write_service_env
+  CONFIG_CONTROL_TOKEN=
+  if [ "$INSTALL_MODE" = native ]; then
+    start_native_egress
+  else
+    write_compose_file
+    install_docker
+    start_docker_egress
+  fi
+  write_installation_record
+  printf 'One Browser Egress %s (%s) was updated in place to %s and is healthy at %s.\n' \
+    "$CONFIG_EGRESS_ID" "$INSTALL_MODE" "$RESOLVED_VERSION" "$CONFIG_PUBLIC_ENDPOINT"
+}
+
 cleanup_sensitive_files() {
   set +e
   if [ -n "${CURL_CONFIG_FILE:-}" ]; then
@@ -1414,13 +1475,21 @@ installer_main() {
       log "No existing Egress installation detected; starting a fresh install for $HOST_PLATFORM"
       ;;
     installed)
-      log "Existing Egress installation detected; validating enrollment and reinstalling in place"
+      log "Existing Egress installation detected; checking its runtime version"
       ;;
     partial)
       log "Partial Egress installation state detected; resuming protected installation"
       ;;
     *) die "Internal installation state is invalid" ;;
   esac
+  install_base_packages "$REQUESTED_TLS_ENABLED"
+  if [ "$installation_state" = installed ] && [ "$replace_existing" = 0 ]; then
+    log "Preserving the existing node enrollment while checking its runtime version;" \
+      "the supplied enrollment token will not be consumed"
+    update_existing_installation
+    return 0
+  fi
+
   if [ -e "$ENV_FILE" ]; then
     if ! existing_mode=$(existing_enrollment_mode \
       "$requested_fingerprint" "$replace_existing"); then
@@ -1439,7 +1508,6 @@ installer_main() {
   elif [ "$replace_existing" = 1 ]; then
     log "No local enrollment state exists; proceeding as a fresh installation"
   fi
-  install_base_packages "$REQUESTED_TLS_ENABLED"
 
   if [ -e "$ENV_FILE" ]; then
     if [ "$existing_mode" = renew ]; then
@@ -1582,6 +1650,7 @@ bootstrap() {
     read_env_value load_existing_env ensure_install_directories ensure_certificate_directory \
     package_installed install_base_packages verify_supported_os detect_host_platform \
     detect_installation_state write_installation_record installed_runtime \
+    installed_version runtime_installation_complete \
     configure_docker_repository enable_docker_service install_docker \
     ensure_native_user resolve_latest_version prepare_runtime_config \
     download_native_binary write_native_service run_native_command \
@@ -1595,7 +1664,7 @@ bootstrap() {
     discover_public_ip canonicalize_ipv6 resolve_ipv4 resolve_ipv6 \
     verify_domain_points_here \
     issue_and_install_certificate write_renewal_hook compose wait_for_health \
-    start_docker_egress cleanup_sensitive_files installer_main)
+    start_docker_egress update_existing_installation cleanup_sensitive_files installer_main)
   exec -a one-browser-egress-installer /bin/bash -c \
     "${stage_code}"$'\n''installer_main "$@"' \
     one-browser-egress-installer-stage2 \

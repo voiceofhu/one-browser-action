@@ -134,20 +134,32 @@ jobs:
         include:
           - name: linux-x64
             platform: ubuntu-22.04
-            rust-target: ''
+            rust-target: ""
             args: --config src-tauri/tauri.ci.conf.json --bundles appimage deb --ci
+            checksum-platform: linux
+            checksum-arch: x64
+            executable-path: app/src-tauri/target/release/one-browser
           - name: windows-x64
             platform: windows-latest
-            rust-target: ''
+            rust-target: ""
             args: --config src-tauri/tauri.ci.conf.json --bundles nsis --ci
+            checksum-platform: windows
+            checksum-arch: x64
+            executable-path: app/src-tauri/target/release/one-browser.exe
           - name: macos-arm64
             platform: macos-14
             rust-target: aarch64-apple-darwin
             args: --target aarch64-apple-darwin --config src-tauri/tauri.macos.conf.json --config src-tauri/tauri.ci.conf.json --bundles dmg --ci
+            checksum-platform: macos
+            checksum-arch: arm64
+            executable-path: app/src-tauri/target/aarch64-apple-darwin/release/bundle/macos/One Browser.app/Contents/MacOS/one-browser
           - name: macos-x64
             platform: macos-15-intel
             rust-target: x86_64-apple-darwin
             args: --target x86_64-apple-darwin --config src-tauri/tauri.macos.conf.json --config src-tauri/tauri.ci.conf.json --bundles dmg --ci
+            checksum-platform: macos
+            checksum-arch: x64
+            executable-path: app/src-tauri/target/x86_64-apple-darwin/release/bundle/macos/One Browser.app/Contents/MacOS/one-browser
 
     steps:
       - name: Checkout app
@@ -242,3 +254,31 @@ jobs:
           uploadUpdaterSignatures: false
           args: ${{ matrix.args }}
           releaseAssetNamePattern: ${{ env.APP_NAME }}_[version]_[platform]_[arch][setup].[ext]
+
+      - name: Upload executable SHA-256 metadata
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+          VERSION_TAG: ${{ needs.resolve.outputs.version_tag }}
+          EXECUTABLE_PATH: ${{ matrix.executable-path }}
+          CHECKSUM_PLATFORM: ${{ matrix.checksum-platform }}
+          CHECKSUM_ARCH: ${{ matrix.checksum-arch }}
+        run: |
+          set -euo pipefail
+
+          if [ ! -f "$EXECUTABLE_PATH" ]; then
+            echo "App executable not found: $EXECUTABLE_PATH" >&2
+            exit 1
+          fi
+
+          version="${VERSION_TAG#v}"
+          executable_sha256="$(
+            node -e "const fs=require('node:fs');const crypto=require('node:crypto');const file=fs.readFileSync(process.argv[1]);process.stdout.write(crypto.createHash('sha256').update(file).digest('hex'))" \
+              "$EXECUTABLE_PATH"
+          )"
+          checksum_name="${APP_NAME}-executable_${version}_${CHECKSUM_PLATFORM}_${CHECKSUM_ARCH}_${executable_sha256}.sha256"
+          printf 'sha256:%s  %s\n' "$executable_sha256" "$EXECUTABLE_PATH" > "$checksum_name"
+
+          gh release upload "$VERSION_TAG" "$checksum_name" \
+            --repo "${{ github.repository }}" \
+            --clobber

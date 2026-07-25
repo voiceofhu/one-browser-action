@@ -192,21 +192,26 @@ mock_linux_arm64_platform() (
 }
 pass
 
+# shellcheck disable=SC2329
+mock_prepare_latest_docker_runtime() (
+  resolve_latest_version() { printf '26.725.1317'; }
+  INSTALL_MODE=docker
+  REQUESTED_VERSION=latest
+  RESOLVED_VERSION=
+  EGRESS_IMAGE_REPOSITORY=ghcr.io/voiceofhu/one-browser-egress
+  CONFIG_IMAGE=server-selected-image:unused
+  prepare_runtime_config
+  [ "$RESOLVED_VERSION" = 26.725.1317 ] &&
+    [ "$CONFIG_IMAGE" = ghcr.io/voiceofhu/one-browser-egress:26.725.1317 ]
+)
+expect_success "default Docker install resolves latest to a concrete version" \
+  mock_prepare_latest_docker_runtime
 INSTALL_MODE=docker
-REQUESTED_VERSION=latest
-RESOLVED_VERSION=
-EGRESS_IMAGE_REPOSITORY=ghcr.io/voiceofhu/one-browser-egress
-CONFIG_IMAGE=server-selected-image:unused
-prepare_runtime_config
-[ "$RESOLVED_VERSION" = latest ] &&
-  [ "$CONFIG_IMAGE" = ghcr.io/voiceofhu/one-browser-egress:latest ] || {
-  printf 'FAIL: default Docker install did not select the latest image\n' >&2
-  exit 1
-}
-pass
 # shellcheck disable=SC2034
 REQUESTED_VERSION=26.724.1
 RESOLVED_VERSION=
+EGRESS_IMAGE_REPOSITORY=ghcr.io/voiceofhu/one-browser-egress
+CONFIG_IMAGE=server-selected-image:unused
 prepare_runtime_config
 [ "$RESOLVED_VERSION" = 26.724.1 ] &&
   [ "$CONFIG_IMAGE" = ghcr.io/voiceofhu/one-browser-egress:26.724.1 ] || {
@@ -255,6 +260,32 @@ pass
   exit 1
 }
 pass
+cat >"$INSTALL_RECORD" <<'EOF'
+schema=2
+runtime=docker
+platform=linux-amd64
+version=26.725.1317
+EOF
+[ "$(installed_version)" = 26.725.1317 ] || {
+  printf 'FAIL: concrete installed version was not detected\n' >&2
+  exit 1
+}
+pass
+sed 's/version=26.725.1317/version=latest/' "$INSTALL_RECORD" \
+  >"$state_dir/.installation-latest"
+INSTALL_RECORD=$state_dir/.installation-latest
+expect_failure "legacy latest marker is not a concrete installed version" \
+  installed_version
+INSTALL_RECORD=$state_dir/.installation
+
+INSTALL_MODE=docker
+expect_success "complete Docker runtime files are detected" runtime_installation_complete
+INSTALL_MODE=native
+expect_failure "missing native runtime files are incomplete" runtime_installation_complete
+: >"$NATIVE_BINARY"
+: >"$NATIVE_SERVICE_FILE"
+chmod 0755 "$NATIVE_BINARY"
+expect_success "complete native runtime files are detected" runtime_installation_complete
 
 response_file=$tmp_dir/enrollment.json
 cat >"$response_file" <<EOF
@@ -803,5 +834,63 @@ printf 'HTTP/1.1 100 Continue\r\nCache-Control: no-store\r\n\r\nHTTP/2 200\r\nCa
   >"$tmp_dir/headers"
 expect_failure "an interim no-store header cannot validate the final response" \
   response_has_no_store "$tmp_dir/headers"
+
+# shellcheck disable=SC2030,SC2034,SC2329
+mock_up_to_date_installation() (
+  load_existing_env() {
+    CONFIG_EGRESS_ID=hk-egress-01
+    CONFIG_PUBLIC_ENDPOINT=egress.example.com:27600
+    CONFIG_CONTROL_TOKEN=$valid_token
+  }
+  prepare_runtime_config() {
+    RESOLVED_VERSION=26.725.1317
+  }
+  installed_version() { printf '26.725.1317'; }
+  runtime_installation_complete() { return 0; }
+  write_service_env() { : >"$tmp_dir/up-to-date-env-written"; }
+  start_native_egress() { : >"$tmp_dir/up-to-date-runtime-started"; }
+  write_installation_record() { : >"$tmp_dir/up-to-date-record-written"; }
+  ENV_FILE=$tmp_dir/mock.env
+  INSTALL_MODE=native
+  update_existing_installation >/dev/null
+)
+expect_success "matching installed version exits without overwriting the runtime" \
+  mock_up_to_date_installation
+[ ! -e "$tmp_dir/up-to-date-env-written" ] &&
+  [ ! -e "$tmp_dir/up-to-date-runtime-started" ] &&
+  [ ! -e "$tmp_dir/up-to-date-record-written" ] || {
+  printf 'FAIL: up-to-date installation was overwritten\n' >&2
+  exit 1
+}
+pass
+
+# shellcheck disable=SC2030,SC2034,SC2329
+mock_outdated_installation() (
+  load_existing_env() {
+    CONFIG_EGRESS_ID=hk-egress-01
+    CONFIG_PUBLIC_ENDPOINT=egress.example.com:27600
+    CONFIG_CONTROL_TOKEN=$valid_token
+  }
+  prepare_runtime_config() {
+    RESOLVED_VERSION=26.725.1317
+  }
+  installed_version() { printf '26.724.1'; }
+  runtime_installation_complete() { return 0; }
+  write_service_env() { : >"$tmp_dir/outdated-env-written"; }
+  start_native_egress() { : >"$tmp_dir/outdated-runtime-started"; }
+  write_installation_record() { : >"$tmp_dir/outdated-record-written"; }
+  ENV_FILE=$tmp_dir/mock.env
+  INSTALL_MODE=native
+  update_existing_installation >/dev/null
+)
+expect_success "outdated installation is overwritten in place" \
+  mock_outdated_installation
+[ -e "$tmp_dir/outdated-env-written" ] &&
+  [ -e "$tmp_dir/outdated-runtime-started" ] &&
+  [ -e "$tmp_dir/outdated-record-written" ] || {
+  printf 'FAIL: outdated installation was not fully updated\n' >&2
+  exit 1
+}
+pass
 
 printf 'PASS: %d installer tests\n' "$tests_run"

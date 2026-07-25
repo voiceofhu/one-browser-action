@@ -78,9 +78,10 @@ publishes an immutable `egress-v<version>` Release in
 The public, architecture-independent `install.sh` and `uninstall.sh` remain
 ordinary files at the repository root; they are not copied into the Release.
 `install.sh` detects `amd64`/`arm64`, supports `--mode native|docker`, and
-accepts an optional `--version`. Omitting the version installs `latest`. Native
-assets are built against musl so Debian 12 and supported Ubuntu versions do not
-depend on the runner's newer glibc.
+accepts an optional `--version`. Omitting the version resolves the newest
+non-draft Egress Release to its concrete semantic version for both native and
+Docker installs. Native assets are built against musl so Debian 12 and
+supported Ubuntu versions do not depend on the runner's newer glibc.
 
 Release assets:
 
@@ -133,8 +134,10 @@ artifacts. A queued manifest job validates or publishes:
 
 The workflow never force-overwrites this commit-addressed tag and fails closed
 when registry inspection fails for any reason other than a confirmed missing
-manifest. Server-generated commands install the semantic version or `latest`
-directly on each node; GitHub Actions no longer SSH-deploys Egress nodes.
+manifest. Server-generated commands may request a semantic version explicitly;
+otherwise the installer resolves the newest Egress Release and installs its
+concrete version tag on each node. GitHub Actions no longer SSH-deploys Egress
+nodes.
 
 ### App Release
 
@@ -313,7 +316,13 @@ install.sh --mode docker --control-url <origin> --tls-enabled <true|false>
 ```
 
 Add `--version 26.724.1` only when a specific runtime version is required.
-Without it, the newest native Release or the `latest` Docker image is used.
+Without it, the newest Egress Release version is used. Running the generated
+command again first compares that concrete version with the protected local
+installation record. A matching complete runtime is left untouched; an older
+or unknown runtime is overwritten in place while keeping the existing node ID,
+control token, configuration, and certificate. Use
+`--replace-existing-enrollment` only when replacing the enrollment for that
+same node.
 Remove either installation with the generated `uninstall.sh` command.
 In development, Server returns `tls_enabled=false`; private and OrbStack domains
 are allowed and no certificate is requested. Outside development, Server

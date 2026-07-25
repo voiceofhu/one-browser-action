@@ -208,9 +208,8 @@ jobs:
             exit 1
           }
           release_body="$(
-            printf 'Egress source: %s@%s\nInstaller source: %s@%s' \
-              "$EGRESS_REPOSITORY" "$EGRESS_SHA" \
-              "$RELEASE_REPOSITORY" "$RELEASE_SHA"
+            printf 'Egress source: %s@%s' \
+              "$EGRESS_REPOSITORY" "$EGRESS_SHA"
           )"
           if existing_release="$(gh release view "$RELEASE_TAG" \
             --repo "$RELEASE_REPOSITORY" \

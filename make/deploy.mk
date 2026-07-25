@@ -157,7 +157,7 @@ egress:
 	payload="$$(ruby -rjson -e 'puts JSON.generate({ref: ARGV[0], inputs: {egress_repository: ARGV[1], egress_ref: ARGV[2], version_tag: ARGV[3]}})' "$(ACTION_REF)" "$(EGRESS_REPOSITORY)" "$$egress_ref" "$$tag")"; \
 	$(call dispatch_workflow,egress-release.yml); \
 	echo "Triggered egress-release.yml in $(ACTION_REPOSITORY)"; \
-	payload="$$(ruby -rjson -e 'puts JSON.generate({ref: ARGV[0], inputs: {egress_ref: ARGV[1], deploy: false, deploy_targets: \"all\", rollout: \"full\"}})' "$(ACTION_REF)" "$$egress_ref")"; \
+	payload="$$(ruby -rjson -e 'puts JSON.generate({ref: ARGV[0], inputs: {egress_ref: ARGV[1], deploy: false, deploy_targets: "all", rollout: "full"}})' "$(ACTION_REF)" "$$egress_ref")"; \
 	$(call dispatch_workflow,egress.yml); \
 	echo "Triggered egress.yml build-only packaging in $(ACTION_REPOSITORY)"
 

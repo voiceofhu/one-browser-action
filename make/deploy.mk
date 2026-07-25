@@ -1,6 +1,4 @@
-EGRESS_POSITIONAL_TARGET := $(filter 1 2 3 all,$(MAKECMDGOALS))
-
-.PHONY: deploy-server egress serve-egress-installer deploy-egress deploy-app debug-app check-token 1 2 3 all
+.PHONY: deploy-server egress serve-egress-installer deploy-app debug-app check-token
 
 define require_gh_token
 if [ -z "$${GH_TOKEN:-}" ]; then \
@@ -157,9 +155,9 @@ egress:
 	payload="$$(ruby -rjson -e 'puts JSON.generate({ref: ARGV[0], inputs: {egress_repository: ARGV[1], egress_ref: ARGV[2], version_tag: ARGV[3]}})' "$(ACTION_REF)" "$(EGRESS_REPOSITORY)" "$$egress_ref" "$$tag")"; \
 	$(call dispatch_workflow,egress-release.yml); \
 	echo "Triggered egress-release.yml in $(ACTION_REPOSITORY)"; \
-	payload="$$(ruby -rjson -e 'puts JSON.generate({ref: ARGV[0], inputs: {egress_ref: ARGV[1], deploy: false, deploy_targets: "all", rollout: "full"}})' "$(ACTION_REF)" "$$egress_ref")"; \
+	payload="$$(ruby -rjson -e 'puts JSON.generate({ref: ARGV[0], inputs: {egress_ref: ARGV[1]}})' "$(ACTION_REF)" "$$egress_ref")"; \
 	$(call dispatch_workflow,egress.yml); \
-	echo "Triggered egress.yml build-only packaging in $(ACTION_REPOSITORY)"
+	echo "Triggered egress.yml Docker image packaging in $(ACTION_REPOSITORY)"
 
 serve-egress-installer:
 	@command -v python3 >/dev/null 2>&1 || { \
@@ -175,40 +173,6 @@ serve-egress-installer:
 	@python3 -m http.server "$(EGRESS_INSTALLER_PORT)" \
 		--bind "$(EGRESS_INSTALLER_BIND)" \
 		--directory .
-
-deploy-egress:
-	@set -euo pipefail; \
-	target="$(strip $(EGRESS_POSITIONAL_TARGET))"; \
-	case "$$target" in \
-		1|2|3) deploy_targets="egress-$$target" ;; \
-		all) deploy_targets=all ;; \
-		*) echo "Usage: make deploy-egress <1|2|3|all>" >&2; exit 1 ;; \
-	esac; \
-	$(require_gh_token); \
-	$(normalize_gh_token); \
-	egress_ref="$(EGRESS_REF)"; \
-	rollout=full; \
-	deploy="$(DEPLOY)"; \
-	case "$$deploy" in false|0|no|n) deploy=false ;; *) deploy=true ;; esac; \
-	printf '%s\n' \
-		"Egress release inputs:" \
-		"  action_repository: $(ACTION_REPOSITORY)" \
-		"  action_ref:        $(ACTION_REF)" \
-		"  egress_repository: $(EGRESS_REPOSITORY)" \
-		"  egress_ref:        $${egress_ref:-default branch}" \
-		"  deploy_targets:    $$deploy_targets" \
-		"  rollout:           $$rollout" \
-		"  deploy:            $$deploy"; \
-	case "$(DRY_RUN)" in true|1|yes|y) exit 0 ;; esac; \
-	payload="$$(ruby -rjson -e 'puts JSON.generate({ref: ARGV[0], inputs: {egress_ref: ARGV[1], deploy_targets: ARGV[2], rollout: ARGV[3], deploy: ARGV[4] == "true"}})' "$(ACTION_REF)" "$$egress_ref" "$$deploy_targets" "$$rollout" "$$deploy")"; \
-	$(call dispatch_workflow,egress.yml); \
-	echo "Triggered egress.yml in $(ACTION_REPOSITORY)"
-
-1 2 3 all:
-	@if [ -z "$(filter deploy-egress,$(MAKECMDGOALS))" ]; then \
-		echo "Use: make deploy-egress $@" >&2; \
-		exit 1; \
-	fi
 
 deploy-app:
 	@set -euo pipefail; \

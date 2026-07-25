@@ -15,11 +15,11 @@ stay private:
 Keep source repositories private, but run the heavy CI/CD implementation here.
 The source repositories do not need tag-trigger workflows. Their local
 `make push-tag` targets push the tag first, then call `make deploy-server`,
-`make egress`, `make deploy-egress`, or `make deploy-app` in this repository
-with the pushed version and exact source commit SHA. `make egress` packages
-release assets; deployment commands add a positional target, for example
-`make deploy-egress 3`. This repository then checks out that immutable source
-revision and runs the build.
+`make egress`, or `make deploy-app` in this repository with the pushed version
+and exact source commit SHA. `make egress` publishes both native Release assets
+and the multi-platform Docker image. Egress node installation is performed by
+the Server-generated `install.sh` command, not by an Action SSH deployment
+target.
 
 ## Workflows
 
@@ -70,11 +70,11 @@ optional version or `latest` aliases.
 
 File: `.github/workflows/egress-release.yml`
 
-This workflow is dispatched by `make egress` alongside a build-only
-`egress.yml` run. It resolves an immutable
-`one-browser-egress` commit, verifies the optional requested version against
-that commit's `Cargo.toml`, and publishes an immutable
-`egress-v<version>` Release in `voiceofhu/one-browser-action`.
+This workflow is dispatched by `make egress` alongside the build-only Egress
+image workflow. It resolves an immutable `one-browser-egress` commit, verifies
+the optional requested version against that commit's `Cargo.toml`, and
+publishes an immutable `egress-v<version>` Release in
+`voiceofhu/one-browser-action`.
 The public, architecture-independent `install.sh` and `uninstall.sh` remain
 ordinary files at the repository root; they are not copied into the Release.
 `install.sh` detects `amd64`/`arm64`, supports `--mode native|docker`, and
@@ -114,22 +114,13 @@ This exposes the working-tree `install.sh` and `uninstall.sh` under
 root files from `raw.githubusercontent.com`; the local helper is only for
 editing and testing the scripts.
 
-### Egress Deploy
+### Egress Image
 
 File: `.github/workflows/egress.yml`
 
-This workflow builds and deploys the independently released Egress data plane.
-It resolves an immutable `one-browser-egress` source commit, reuses its existing
-GHCR image when available, and can still deploy when no build was needed.
-
-Inputs:
-
-- `egress_ref`: branch, tag, or commit; empty means the default branch
-- `deploy`: deploy after publishing or locating the image
-- `deploy_targets`: `all` enabled targets or a comma-separated target ID list,
-  for example `egress-3` or `egress-1,egress-2`
-- `rollout`: `canary` deploys only the first selected wave; `full` continues to
-  later waves after the canary succeeds
+`make egress` dispatches this image-only workflow after dispatching the native
+Release workflow. It resolves the same Egress ref and builds or locates the
+corresponding GHCR image without connecting to any node.
 
 The source and image are deliberately fixed to the trusted
 `voiceofhu/one-browser-egress` repository. The two architecture jobs publish
@@ -142,29 +133,8 @@ artifacts. A queued manifest job validates or publishes:
 
 The workflow never force-overwrites this commit-addressed tag and fails closed
 when registry inspection fails for any reason other than a confirmed missing
-manifest. Production deploys use `sha-<egress_sha>`. The Egress source
-repository owns its Dockerfile, Compose file, SSH setup, and rollback-aware
-deployment scripts.
-
-The deploy stage reads `.github/config/egress-targets.json` and creates one
-matrix job for each selected node. Each matrix job binds its target's GitHub
-Environment directly, then invokes the composite entrypoint at
-`.github/actions/egress/action.yml`; its identity check, registry login, public
-probe, and rollback helpers live together in the same action directory. The
-image is built and published once, then pinned by manifest digest for every
-deployment. The lowest selected wave runs first as a canary; later-wave matrix
-jobs start only after that canary succeeds. Each node job has independent
-concurrency, verifies the host
-identity before changing Compose, and performs its own rollback-aware container
-deploy and public readiness check. After deployment, the workflow verifies the
-public certificate and ALPN `h2`, then requires the unauthenticated protocol
-response to be `407 Proxy Authentication Required` with a Bearer challenge.
-Failure of that public check restores the pre-deploy Compose file and image.
-
-Target configuration contains no private keys, registry credentials, or Egress
-control tokens. Per-node SSH credentials remain in GitHub Environment secrets,
-the shared `GH_TOKEN` remains a Repository secret, and each control token
-remains only in Server registration and the target host's persistent `.env`.
+manifest. Server-generated commands install the semantic version or `latest`
+directly on each node; GitHub Actions no longer SSH-deploys Egress nodes.
 
 ### App Release
 
@@ -243,7 +213,7 @@ Build without deploying:
 make deploy-server TAG=v26.709.1542 DEPLOY=false
 ```
 
-Package native Linux binaries and the multi-platform Docker image:
+Package native Linux binaries and publish the multi-platform Docker image:
 
 ```bash
 make egress
@@ -258,44 +228,10 @@ make egress TAG=v26.724.1 EGRESS_REF=v26.724.1
 
 The resulting Action release is named `egress-v26.724.1`. The root
 `install.sh`/`uninstall.sh` files are used directly and are not Release assets.
-The same `make egress` call also publishes the Docker semantic-version alias
-and, for the default branch, `latest`; it does not deploy any node. Packaging
-and node deployment are separate operations.
-
-Deploy Egress node 3:
-
-```bash
-make deploy-egress 3
-```
-
-Common Egress options:
-
-```bash
-make deploy-egress 3 EGRESS_REF=v26.709.1542
-```
-
-Deploy nodes 1 or 2:
-
-```bash
-make deploy-egress 1
-make deploy-egress 2
-```
-
-Deploy every enabled target. The first wave must succeed before later waves:
-
-```bash
-make deploy-egress all
-```
-
-Build and publish the commit-addressed image without deployment:
-
-```bash
-make deploy-egress all DEPLOY=false
-```
-
-Exactly one positional target is required. `1`, `2`, and `3` map to
-`egress-1`, `egress-2`, and `egress-3`; `all` selects every `enabled: true`
-entry. Missing, unknown, or multiple targets fail before dispatch.
+The same command publishes `sha-<egress_sha>`, the Cargo semantic version, and
+`latest` for the default branch. It never connects to or changes an Egress
+node. Create the node in Server and run one of its generated installation
+commands on the target host.
 
 Trigger an app release:
 
@@ -342,62 +278,9 @@ machine as `egress-3` (`51.68.38.135:22`). No separate Repository-level
 `egress-3` deployments share one concurrency group so their temporary registry
 logins cannot race on the same Docker host.
 
-For Egress, create one GitHub Environment per target ID, for example
-`egress-3`. Add these same secret names to every environment:
-
-- `DEPLOY_SSH_KEY`: private login key for that node's deploy account
-- `DEPLOY_KNOWN_HOSTS`: pinned SSH host-key line for exactly that target
-
-Run this on each Egress server to generate the complete
-`DEPLOY_KNOWN_HOSTS` value without hard-coding its public IPv4:
-
-```bash
-# Detect this server's public IPv4 and format its local ED25519 Host Key as a
-# known_hosts record. Copy the entire output line into DEPLOY_KNOWN_HOSTS.
-EGRESS_PUBLIC_IPV4="$(curl -4fsS https://api.ipify.org)" &&
-  sudo awk -v host="$EGRESS_PUBLIC_IPV4" \
-    '{print host, $1, $2}' \
-    /etc/ssh/ssh_host_ed25519_key.pub
-```
-
-The output must look like `IP ssh-ed25519 AAAA...`; the `SHA256:...` value from
-`ssh-keygen -lf` is only a fingerprint and is not a valid known-hosts record.
-The detected IP must exactly match this node's `host` in
-`egress-targets.json`. This command assumes the current standard SSH port `22`;
-for a custom port, the host field must be `[IP]:PORT`. The IPv4 lookup uses the
-[ipify text endpoint](https://www.ipify.org/).
-
-Do not put a private key, control token, GitHub token, or host `.env` value in
-`egress-targets.json`. Egress does not require any GitHub Actions Variables
-(`vars.*`). During a private-image deploy, the workflow derives the registry
-username from the Repository `GH_TOKEN`, sends the token to `docker login`
-through stdin, pulls the image, and logs the target out afterward. The token is
-never passed to the Egress container.
-
-Non-secret deploy parameters live in
-`.github/config/egress-targets.json`:
-
-| Field | Purpose |
-| --- | --- |
-| `id` | Stable selection key and node identity used by the workflow |
-| `enabled` | Whether `deploy_targets=all` may select this node |
-| `wave` | Rollout wave; the lowest selected wave is the canary gate |
-| `environment` | GitHub Environment that supplies the node's secrets and approval policy |
-| `host`, `port`, `user` | SSH destination |
-| `endpoint` | Public Egress TLS/H2 endpoint checked after deploy |
-| `control_url` | Expected public Server URL in the node's persistent `.env` |
-| `remote_dir` | Persistent deployment directory; currently `/opt/one-browser-egress` |
-| Compose and container fields | Per-host project, service, container, and network names |
-| `use_sudo` | `0` for direct Docker access or `1` for the exact passwordless sudo contract |
-| log/check fields | Per-node public validation and bounded post-deploy logs |
-
-`egress-1`, `egress-2`, and `egress-3` are currently enabled, so `all` selects
-all three nodes. Keep any new node disabled until its persistent files,
-certificate, Server registration, SSH Environment secrets, Docker access, and
-public `27600` path are ready.
-
-The control network name is now a per-target parameter. Docker networks are
-host-local and do not connect Egress nodes on different servers.
+Egress publication does not require per-node GitHub Environments, SSH keys, or
+target manifests. Nodes pull the public Release asset or GHCR image through the
+Server-generated installer command.
 
 ## Production Server Prerequisites
 
@@ -413,68 +296,16 @@ or public Egress readiness. Those belong to the independent Egress deployment.
 
 ## Production Egress Prerequisites
 
-Provision this persistent layout once:
+For each production node, prepare a unique lowercase DNS name whose DNS-only A
+record points to that host's public IPv4 address. Do not publish an AAAA record.
+Allow inbound TCP `80` for Certbot HTTP-01 and TCP `27600` for the Egress data
+plane. The host also needs outbound HTTPS access to GitHub, GHCR, Let's Encrypt,
+and the public Server origin.
 
-```text
-/opt/one-browser-egress/
-  .env
-  docker-compose.yml
-  certs/fullchain.pem
-  certs/privkey.pem
-```
-
-Every Egress process requires its own `EGRESS_ID`, public endpoint, and
-`EGRESS_CONTROL_TOKEN` of at least 32 bytes. Never reuse a token between nodes
-and never reuse `APP_SECRET`, `EGRESS_TOKEN_PEPPER`, or
-`PROXY_CREDENTIAL_KEY`. Register the same plaintext once through the Server
-`egress-node upsert` CLI; Server stores its HMAC instead of adding every node
-token to its long-running `.env`.
-
-The current remote-node control path uses the public Server HTTPS endpoint:
-
-```dotenv
-EGRESS_ID=egress-3
-EGRESS_PUBLIC_ENDPOINT=egress-3.aicbe.com:27600
-EGRESS_CONTROL_URL=https://browser.aicbe.com
-EGRESS_CONTROL_TOKEN=<unique random value for this node>
-EGRESS_PUBLISH_ADDR=0.0.0.0
-EGRESS_HOST_PORT=27600
-```
-
-The Compose deployment still expects its configured external network to exist
-on that host. It is a local container-network requirement, not a cross-server
-control path:
-
-```bash
-docker network inspect one-browser-control >/dev/null 2>&1 || \
-  docker network create one-browser-control
-```
-
-The Egress workflow requires `/opt/one-browser-egress` and its `.env` to exist.
-Its source-owned deployment script preserves `.env` and `certs/`, deploys the
-digest-pinned image, waits for container health, and then the Action checks the
-public H2 protocol signature. A trusted certificate by itself is insufficient:
-the `407` Bearer response proves public TCP port `27600` reached the Egress
-service.
-
-With the recommended `DEPLOY_USE_SUDO=0`, provision the directory as a setgid,
-group-writable directory owned by the deployment group, and make `.env`
-group-readable but not group-writable. Keep `certs/` owned by `root:65532`.
-
-Certbot renewal, its deploy hook, the DNS-only A record, and inbound TCP `27600`
-firewall policy remain host provisioning. Routine Egress releases do not edit
-DNS, firewall rules, existing Nginx `443` sites, or issue certificates.
-Every Egress data hostname must remain DNS only unless a compatible layer-4
-service is introduced. The workflow's public TLS/H2 check happens after the
-container deployment. A failure restores the previous container image and
-Compose file, but intentionally does not rewrite host DNS or firewall policy.
-
-### Add another Egress deploy target
-
-#### Full host bootstrap
-
-For a fresh Debian or Ubuntu amd64/arm64 host, use one of the commands generated
-by Server. The root script supports both runtime backends:
+Create the node in Server with its domain and display name. Server owns the
+node ID and one-time enrollment token, then returns native, Docker, and
+uninstall commands. Run exactly one installation mode before the enrollment
+expires:
 
 ```bash
 install.sh --mode native --control-url <origin> --tls-enabled <true|false>
@@ -484,76 +315,11 @@ install.sh --mode docker --control-url <origin> --tls-enabled <true|false>
 Add `--version 26.724.1` only when a specific runtime version is required.
 Without it, the newest native Release or the `latest` Docker image is used.
 Remove either installation with the generated `uninstall.sh` command.
-
-#### Deployment account only
-
-To create or repair only the shared deployment account on an existing Debian
-host, run `.github/actions/egress/setup-gh-deploy-user.sh` as root after Docker
-is installed. This standalone script manages `authorized_keys` as exactly the
-repository's fixed `gh-deploy@one-browser` public key. Its matching private key
-is used as `DEPLOY_SSH_KEY` in every Egress Environment:
-
-```bash
-sudo bash .github/actions/egress/setup-gh-deploy-user.sh
-```
-
-One-line account setup from GitHub:
-
-```bash
-curl -fsSL \
-  https://github.com/voiceofhu/one-browser-action/raw/refs/heads/main/.github/actions/egress/setup-gh-deploy-user.sh \
-  -o /tmp/setup-gh-deploy-user.sh && \
-  sudo bash /tmp/setup-gh-deploy-user.sh
-```
-
-The full bootstrap script interactively asks for the node number or ID, public
-domain, certificate email, and the public half of the deployment SSH key. The
-Server control URL is fixed at `https://browser.aicbe.com`. It generates the unique
-node token automatically, stores the registration copy as
-`/root/<node-id>.control-token` with mode `0600`, and never prints it. The script
-never pulls or starts Egress and never stores GHCR credentials.
-See [the Chinese multi-node guide](docs/egress-multi-node.zh-CN.md#新服务器初始化顺序)
-for the complete operator sequence.
-
-Use this order for `egress-N`:
-
-1. Configure the DNS-only A record and inbound TCP `27600`, then run the host
-   bootstrap to provision `/opt/one-browser-egress/.env`, the public
-   certificate, Certbot hook, deployment account, and Docker access.
-2. Use the generated control token and the host's unique `EGRESS_ID`,
-   `EGRESS_PUBLIC_ENDPOINT`, and public `EGRESS_CONTROL_URL` for Server
-   registration.
-3. Register that exact ID, endpoint, capacity, region, carrier, and one-time
-   token through `one-browser-server egress-node upsert`.
-4. Create a GitHub Environment with the same name as the target ID and add only
-   its `DEPLOY_SSH_KEY` and `DEPLOY_KNOWN_HOSTS`. Configure Repository
-   `GH_TOKEN` and `DEPLOY_USER` once; the workflow derives the GHCR username
-   from `GH_TOKEN` and logs the target out after the pull. Add required
-   reviewers if production approval is desired.
-5. Add or update the non-secret entry in `egress-targets.json`, including its
-   `wave` and expected `control_url`. Keep
-   `enabled: false` until manual `validate-config`, container health, and public
-   TLS/H2 checks pass; then set it to `true`.
-6. Validate target resolution locally:
-
-   ```bash
-   output=$(mktemp)
-   GITHUB_OUTPUT="$output" EGRESS_TARGETS_INPUT=egress-N \
-     bash .github/scripts/resolve-egress-targets.sh \
-     .github/config/egress-targets.json
-   ```
-
-7. Deploy only the new node first:
-
-   ```bash
-   make deploy-egress 1  # replace 1 with the node number
-   ```
-
-   The current Make entry accepts `N` values `1`, `2`, or `3`.
-
-The Action never creates a node's host `.env`, certificate, firewall policy,
-Server registry row, or control token. This keeps routine image releases from
-silently provisioning or re-identifying a production exit.
+In development, Server returns `tls_enabled=false`; private and OrbStack domains
+are allowed and no certificate is requested. Outside development, Server
+returns `tls_enabled=true`; the installer validates public IPv4 DNS and obtains
+the certificate automatically. No GitHub Environment, deployment SSH key, or
+target manifest is required for node enrollment.
 
 ## Trigger Note
 

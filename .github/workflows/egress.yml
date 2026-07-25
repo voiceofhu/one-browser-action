@@ -1,7 +1,5 @@
-name: Egress Deploy
-run-name: >-
-  Egress ${{ inputs.deploy_targets }} ·
-  ${{ inputs.deploy && inputs.rollout || 'build-only' }}
+name: Egress Image
+run-name: Egress image · ${{ inputs.egress_ref || 'default branch' }}
 
 on:
   workflow_dispatch:
@@ -9,24 +7,6 @@ on:
       egress_ref:
         description: one-browser-egress branch, tag, or commit. Empty means the default branch.
         required: false
-      deploy:
-        description: Deploy after publishing or locating the image
-        type: boolean
-        required: false
-        default: true
-      deploy_targets:
-        description: Comma-separated target IDs from egress-targets.json, or all enabled targets
-        type: string
-        required: false
-        default: all
-      rollout:
-        description: Deploy only the first selected wave or continue through every selected wave
-        type: choice
-        required: false
-        default: full
-        options:
-          - canary
-          - full
 
 permissions:
   contents: read
@@ -48,7 +28,6 @@ jobs:
       image_ref: ${{ steps.refs.outputs.image_ref }}
       image_revision_tag: ${{ steps.refs.outputs.image_revision_tag }}
       image_build_tag: ${{ steps.refs.outputs.image_build_tag }}
-      deploy: ${{ steps.refs.outputs.deploy }}
       publish_latest: ${{ steps.refs.outputs.publish_latest }}
       should_build: ${{ steps.plan.outputs.should_build }}
       gh_username: ${{ steps.github-identity.outputs.login }}
@@ -70,7 +49,6 @@ jobs:
           EGRESS_REPOSITORY: ${{ env.EGRESS_REPOSITORY }}
           EGRESS_REF_INPUT: ${{ inputs.egress_ref }}
           IMAGE_NAME: ${{ env.EGRESS_IMAGE_NAME }}
-          DEPLOY_INPUT: ${{ inputs.deploy }}
         run: bash action/.github/scripts/resolve-egress-release.sh
 
       - name: Resolve GitHub token identity
@@ -177,8 +155,6 @@ jobs:
       needs.resolve.result == 'success' &&
       (needs.resolve.outputs.should_build == 'false' || needs.build.result == 'success')
     runs-on: ubuntu-latest
-    outputs:
-      image_pinned_ref: ${{ steps.manifest.outputs.image_pinned_ref }}
     concurrency:
       group: one-browser-egress-manifest
       cancel-in-progress: false
@@ -203,7 +179,6 @@ jobs:
           password: ${{ secrets.GH_TOKEN }}
 
       - name: Publish multi-platform image
-        id: manifest
         shell: bash
         env:
           IMAGE: ${{ needs.resolve.outputs.image_ref }}
@@ -216,147 +191,3 @@ jobs:
           IMAGE_DESCRIPTION: One Browser Egress data-plane image, packaged by the public one-browser-action repository
           IMAGE_REVISION: ${{ needs.resolve.outputs.egress_sha }}
         run: bash action/.github/scripts/publish-egress-manifests.sh
-
-  targets:
-    name: Resolve deploy targets
-    needs: resolve
-    if: needs.resolve.outputs.deploy == 'true'
-    runs-on: ubuntu-latest
-    outputs:
-      canary_matrix: ${{ steps.targets.outputs.canary_matrix }}
-      canary_count: ${{ steps.targets.outputs.canary_count }}
-      rollout_matrix: ${{ steps.targets.outputs.rollout_matrix }}
-      rollout_count: ${{ steps.targets.outputs.rollout_count }}
-
-    steps:
-      - name: Checkout workflow configuration
-        uses: actions/checkout@v4
-        with:
-          path: action
-          clean: true
-          fetch-depth: 1
-          persist-credentials: false
-
-      - name: Resolve enabled targets
-        id: targets
-        shell: bash
-        env:
-          EGRESS_TARGETS_INPUT: ${{ inputs.deploy_targets }}
-          EGRESS_ROLLOUT_INPUT: ${{ inputs.rollout }}
-        run: >-
-          bash action/.github/scripts/resolve-egress-targets.sh
-          action/.github/config/egress-targets.json
-
-  deploy-canary:
-    name: Canary ${{ matrix.target.id }}
-    needs:
-      - resolve
-      - publish
-      - targets
-    if: >-
-      always() &&
-      !cancelled() &&
-      needs.resolve.result == 'success' &&
-      needs.resolve.outputs.deploy == 'true' &&
-      needs.publish.result == 'success' &&
-      needs.targets.result == 'success' &&
-      needs.targets.outputs.canary_count != '0'
-    strategy:
-      fail-fast: true
-      max-parallel: 1
-      matrix: ${{ fromJSON(needs.targets.outputs.canary_matrix) }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    environment:
-      name: ${{ matrix.target.environment }}
-      url: https://${{ matrix.target.endpoint }}
-    concurrency:
-      group: one-browser-egress-${{ matrix.target.id }}-deploy
-      cancel-in-progress: false
-
-    steps:
-      - name: Checkout Egress
-        uses: actions/checkout@v4
-        with:
-          repository: ${{ needs.resolve.outputs.egress_repository }}
-          ref: ${{ needs.resolve.outputs.egress_sha }}
-          path: egress
-          token: ${{ secrets.GH_TOKEN }}
-          clean: true
-          fetch-depth: 1
-          persist-credentials: false
-
-      - name: Checkout deployment action
-        uses: actions/checkout@v4
-        with:
-          path: action
-          clean: true
-          fetch-depth: 1
-          persist-credentials: false
-
-      - name: Deploy Egress node
-        uses: ./action/.github/actions/egress
-        with:
-          target_json: ${{ toJSON(matrix.target) }}
-          image_pinned_ref: ${{ needs.publish.outputs.image_pinned_ref }}
-          deploy_ssh_key: ${{ secrets.DEPLOY_SSH_KEY }}
-          deploy_known_hosts: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
-          gh_token: ${{ secrets.GH_TOKEN }}
-
-  deploy-rollout:
-    name: Rollout ${{ matrix.target.id }}
-    needs:
-      - resolve
-      - publish
-      - targets
-      - deploy-canary
-    if: >-
-      always() &&
-      !cancelled() &&
-      needs.resolve.result == 'success' &&
-      needs.resolve.outputs.deploy == 'true' &&
-      needs.publish.result == 'success' &&
-      needs.targets.result == 'success' &&
-      needs.deploy-canary.result == 'success' &&
-      needs.targets.outputs.rollout_count != '0'
-    strategy:
-      fail-fast: false
-      max-parallel: 2
-      matrix: ${{ fromJSON(needs.targets.outputs.rollout_matrix) }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    environment:
-      name: ${{ matrix.target.environment }}
-      url: https://${{ matrix.target.endpoint }}
-    concurrency:
-      group: one-browser-egress-${{ matrix.target.id }}-deploy
-      cancel-in-progress: false
-
-    steps:
-      - name: Checkout Egress
-        uses: actions/checkout@v4
-        with:
-          repository: ${{ needs.resolve.outputs.egress_repository }}
-          ref: ${{ needs.resolve.outputs.egress_sha }}
-          path: egress
-          token: ${{ secrets.GH_TOKEN }}
-          clean: true
-          fetch-depth: 1
-          persist-credentials: false
-
-      - name: Checkout deployment action
-        uses: actions/checkout@v4
-        with:
-          path: action
-          clean: true
-          fetch-depth: 1
-          persist-credentials: false
-
-      - name: Deploy Egress node
-        uses: ./action/.github/actions/egress
-        with:
-          target_json: ${{ toJSON(matrix.target) }}
-          image_pinned_ref: ${{ needs.publish.outputs.image_pinned_ref }}
-          deploy_ssh_key: ${{ secrets.DEPLOY_SSH_KEY }}
-          deploy_known_hosts: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
-          gh_token: ${{ secrets.GH_TOKEN }}

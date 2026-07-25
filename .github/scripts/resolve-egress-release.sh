@@ -14,7 +14,6 @@ egress_ref="${EGRESS_REF_INPUT:-}"
 publish_latest=false
 image_name="$IMAGE_NAME"
 image_name="$(printf '%s' "$image_name" | tr '[:upper:]' '[:lower:]')"
-deploy="${DEPLOY_INPUT:-true}"
 
 if [[ ! "$egress_repository" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]; then
   echo "Invalid Egress repository: $egress_repository" >&2
@@ -50,10 +49,6 @@ if [[ ! "$package_version" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)
 fi
 image_revision_tag="sha-$egress_sha"
 image_build_tag="build-$egress_sha-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
-case "$deploy" in
-  true|1|yes) deploy=true ;;
-  *) deploy=false ;;
-esac
 
 {
   echo "egress_repository=$egress_repository"
@@ -62,7 +57,6 @@ esac
   echo "image_ref=$REGISTRY/$image_name"
   echo "image_revision_tag=$image_revision_tag"
   echo "image_build_tag=$image_build_tag"
-  echo "deploy=$deploy"
   echo "publish_latest=$publish_latest"
 } >> "$GITHUB_OUTPUT"
 

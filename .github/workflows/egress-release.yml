@@ -214,8 +214,8 @@ jobs:
           if existing_release="$(gh release view "$RELEASE_TAG" \
             --repo "$RELEASE_REPOSITORY" \
             --json body,assets 2>/dev/null)"; then
-            existing_body="$(jq -r '.body // ""' <<<"$existing_release")"
-            test "$existing_body" = "$release_body" || {
+            existing_source="$(jq -r '.body // "" | split("\n")[0]' <<<"$existing_release")"
+            test "$existing_source" = "$release_body" || {
               echo "Release $RELEASE_TAG belongs to a different Egress source." >&2
               exit 1
             }

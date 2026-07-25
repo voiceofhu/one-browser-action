@@ -54,7 +54,8 @@ make deploy-egress TAG=v26.725.1317 EGRESS_REF=v26.725.1317
 
 实际实现按职责拆分在 `scripts/egress/install/` 和
 `scripts/egress/uninstall/`。公开入口通过管道运行时，会先从同一个公开仓库加载对应
-模块，因此 Server 已生成的根目录脚本 URL 保持兼容。脚本不复制进 Release。
+模块；入口只解析一次 `main`，并从同一个提交快照下载全部模块，避免 CDN 缓存混用
+不同版本。因此 Server 已生成的根目录脚本 URL 保持兼容。脚本不复制进 Release。
 `install.sh` 支持 `native`、`docker`、`amd64`、`arm64`，并接受可选的
 `--version`；不传版本时安装最新版本。
 

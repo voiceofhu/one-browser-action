@@ -11,6 +11,21 @@ export ONE_BROWSER_UNINSTALLER_LIBRARY_ONLY=1
 
 tests_run=0
 
+# shellcheck disable=SC2329
+mock_commit_pinned_uninstaller_base() (
+  curl() {
+    printf '%s\n' \
+      '{"ref":"refs/heads/main","object":{"type":"commit","sha":"0123456789abcdef0123456789abcdef01234567"}}'
+  }
+  egress_entrypoint_resolve_default_base_url 2>/dev/null
+)
+[ "$(mock_commit_pinned_uninstaller_base)" = \
+  'https://raw.githubusercontent.com/voiceofhu/one-browser-action/0123456789abcdef0123456789abcdef01234567/scripts/egress' ] || {
+  printf 'FAIL: public uninstaller modules were not pinned to one commit\n' >&2
+  exit 1
+}
+tests_run=$((tests_run + 1))
+
 expect_mode() {
   local expected=$1
   local actual

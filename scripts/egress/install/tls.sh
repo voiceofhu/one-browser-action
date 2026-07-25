@@ -42,19 +42,14 @@ print(address.compressed)
 
 query_ipv4_records() {
   local domain=$1
-
-  dig +time=5 +tries=2 +short "$domain" A 2>/dev/null |
-    filter_ipv4_records
-}
-
-filter_ipv4_records() {
   local record
 
-  while IFS= read -r record; do
-    if validate_ipv4 "$record"; then
-      printf '%s\n' "$record"
-    fi
-  done | sort -u
+  dig +time=5 +tries=2 +short "$domain" A 2>/dev/null |
+    while IFS= read -r record; do
+      if validate_ipv4 "$record"; then
+        printf '%s\n' "$record"
+      fi
+    done | sort -u
 }
 
 query_public_dns_records() {
@@ -84,12 +79,17 @@ query_public_dns_records() {
 
 query_public_ipv4_records() {
   local domain=$1
+  local record
 
   {
     query_public_dns_records "$domain" 1 'https://dns.google/resolve' || true
     query_public_dns_records "$domain" 1 'https://cloudflare-dns.com/dns-query' || true
   } |
-    filter_ipv4_records
+    while IFS= read -r record; do
+      if validate_ipv4 "$record"; then
+        printf '%s\n' "$record"
+      fi
+    done | sort -u
 }
 
 resolve_ipv4() {

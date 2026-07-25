@@ -6,7 +6,7 @@
 set +x
 set -Eeuo pipefail
 
-readonly ONE_BROWSER_EGRESS_DEFAULT_SCRIPT_BASE_URL='https://raw.githubusercontent.com/voiceofhu/one-browser-action/main/scripts/egress'
+readonly ONE_BROWSER_EGRESS_DEFAULT_SCRIPT_BASE_URL='https://raw.githubusercontent.com/voiceofhu/one-browser-action'
 readonly -a ONE_BROWSER_EGRESS_UNINSTALL_MODULES=(
   common.sh
   native.sh
@@ -29,12 +29,38 @@ egress_entrypoint_local_source_dir() {
   printf '%s/scripts/egress/uninstall' "$entrypoint_dir"
 }
 
+egress_entrypoint_resolve_default_base_url() {
+  local response revision
+
+  response=$(curl -q --proto '=https' --tlsv1.2 \
+    --fail --silent --show-error --no-location \
+    --connect-timeout 10 --max-time 30 --max-filesize 262144 \
+    --header 'Accept: application/vnd.github+json' \
+    --header 'X-GitHub-Api-Version: 2022-11-28' \
+    'https://api.github.com/repos/voiceofhu/one-browser-action/git/ref/heads/main') ||
+    egress_entrypoint_die "Unable to resolve the Egress uninstaller commit from GitHub"
+  revision=$(printf '%s' "$response" | tr ',' '\n' |
+    awk -F'"' '$2 == "sha" { print $4; exit }')
+  [ "${#revision}" -eq 40 ] && [[ "$revision" =~ ^[a-f0-9]+$ ]] ||
+    egress_entrypoint_die "GitHub returned an invalid Egress uninstaller commit"
+  printf '==> Loading Egress uninstaller modules from commit %.12s\n' "$revision" >&2
+  printf '%s/%s/scripts/egress' \
+    "$ONE_BROWSER_EGRESS_DEFAULT_SCRIPT_BASE_URL" \
+    "$revision"
+}
+
 egress_entrypoint_download_modules() {
   local destination=$1
   local base_url module
   local -a curl_transport
 
-  base_url=${ONE_BROWSER_EGRESS_SCRIPT_BASE_URL:-$ONE_BROWSER_EGRESS_DEFAULT_SCRIPT_BASE_URL}
+  command -v curl >/dev/null ||
+    egress_entrypoint_die "curl is required to load the Egress uninstaller"
+  if [ -n "${ONE_BROWSER_EGRESS_SCRIPT_BASE_URL:-}" ]; then
+    base_url=$ONE_BROWSER_EGRESS_SCRIPT_BASE_URL
+  else
+    base_url=$(egress_entrypoint_resolve_default_base_url)
+  fi
   base_url=${base_url%/}
   case "$base_url" in
     https://*)
@@ -49,8 +75,6 @@ egress_entrypoint_download_modules() {
       ;;
   esac
 
-  command -v curl >/dev/null ||
-    egress_entrypoint_die "curl is required to load the Egress uninstaller"
   for module in "${ONE_BROWSER_EGRESS_UNINSTALL_MODULES[@]}"; do
     curl -q "${curl_transport[@]}" \
       --fail --silent --show-error --no-location \

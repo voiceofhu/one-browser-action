@@ -42,6 +42,21 @@ expect_failure "uppercase domain" validate_domain Egress.example.com
 expect_failure "leading label hyphen" validate_domain -egress.example.com
 expect_failure "domain with shell characters" validate_domain 'egress.example.com;id'
 
+# shellcheck disable=SC2329
+mock_commit_pinned_installer_base() (
+  curl() {
+    printf '%s\n' \
+      '{"ref":"refs/heads/main","object":{"type":"commit","sha":"0123456789abcdef0123456789abcdef01234567"}}'
+  }
+  egress_entrypoint_resolve_default_base_url 2>/dev/null
+)
+[ "$(mock_commit_pinned_installer_base)" = \
+  'https://raw.githubusercontent.com/voiceofhu/one-browser-action/0123456789abcdef0123456789abcdef01234567/scripts/egress' ] || {
+  printf 'FAIL: public installer modules were not pinned to one commit\n' >&2
+  exit 1
+}
+pass
+
 expect_success "HTTPS origin" validate_control_url https://browser.example.com
 expect_success "HTTPS origin with port and slash" validate_control_url https://browser.example.com:8443/
 expect_failure "plaintext control URL" validate_control_url http://browser.example.com
@@ -155,16 +170,19 @@ mock_aaaa_only_dns_rejected() (
 )
 expect_failure "AAAA-only DNS is rejected" mock_aaaa_only_dns_rejected
 
-filtered_ipv4=$(
-  printf '%s\n' \
-    104.194.67.193 \
-    104.194.67.193 \
-    999.194.67.193 \
-    not-an-address |
-    filter_ipv4_records
+# shellcheck disable=SC2329
+mock_portable_ipv4_filtering() (
+  dig() {
+    printf '%s\n' \
+      104.194.67.193 \
+      104.194.67.193 \
+      999.194.67.193 \
+      not-an-address
+  }
+  query_ipv4_records egress-1.aicbe.com
 )
-[ "$filtered_ipv4" = 104.194.67.193 ] || {
-  printf 'FAIL: portable IPv4 filtering did not retain only valid unique addresses\n' >&2
+[ "$(mock_portable_ipv4_filtering)" = 104.194.67.193 ] || {
+  printf 'FAIL: portable IPv4 query filtering did not retain only valid unique addresses\n' >&2
   exit 1
 }
 pass

@@ -79,7 +79,8 @@ The public, architecture-independent `install.sh` and `uninstall.sh` remain
 stable entrypoints at the repository root; they are not copied into the
 Release. Their implementation is split into focused modules under
 `scripts/egress/install/` and `scripts/egress/uninstall/`. A piped public
-entrypoint loads those modules from the same public repository before running.
+entrypoint resolves `main` once and loads every module from that single commit
+snapshot before running, so CDN caches cannot mix module revisions.
 `install.sh` detects `amd64`/`arm64`, supports `--mode native|docker`, and
 accepts an optional `--version`. Omitting the version resolves the newest
 non-draft Egress Release to its concrete semantic version for both native and

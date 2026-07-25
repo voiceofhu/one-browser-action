@@ -76,7 +76,10 @@ the optional requested version against that commit's `Cargo.toml`, and
 publishes an immutable `egress-v<version>` Release in
 `voiceofhu/one-browser-action`.
 The public, architecture-independent `install.sh` and `uninstall.sh` remain
-ordinary files at the repository root; they are not copied into the Release.
+stable entrypoints at the repository root; they are not copied into the
+Release. Their implementation is split into focused modules under
+`scripts/egress/install/` and `scripts/egress/uninstall/`. A piped public
+entrypoint loads those modules from the same public repository before running.
 `install.sh` detects `amd64`/`arm64`, supports `--mode native|docker`, and
 accepts an optional `--version`. Omitting the version resolves the newest
 non-draft Egress Release to its concrete semantic version for both native and
@@ -97,8 +100,10 @@ must match. The workflow never replaces existing assets. The same complete
 Validate the public installer locally with:
 
 ```bash
-bash -n install.sh uninstall.sh tests/egress-*_test.sh
-shellcheck install.sh uninstall.sh tests/egress-*_test.sh
+bash -n install.sh uninstall.sh scripts/egress/install/*.sh \
+  scripts/egress/uninstall/*.sh tests/egress-*_test.sh
+shellcheck install.sh uninstall.sh scripts/egress/install/*.sh \
+  scripts/egress/uninstall/*.sh tests/egress-*_test.sh
 tests/egress-install_test.sh
 tests/egress-uninstall_test.sh
 ```
@@ -111,9 +116,18 @@ make serve-egress-installer
 ```
 
 This exposes the working-tree `install.sh` and `uninstall.sh` under
-`http://host.orb.internal:27610/`. Generated Server commands use the public
-root files from `raw.githubusercontent.com`; the local helper is only for
-editing and testing the scripts.
+`http://host.orb.internal:27610/`. When testing a piped development entrypoint,
+point its module loader at that same server:
+
+```bash
+curl -fsSL http://host.orb.internal:27610/install.sh |
+  sudo env ONE_BROWSER_EGRESS_SCRIPT_BASE_URL=http://host.orb.internal:27610/scripts/egress \
+    bash -s -- --help
+```
+
+Generated Server commands use the public root files from
+`raw.githubusercontent.com`; the local helper is only for editing and testing
+the scripts.
 
 ### Egress Image
 
@@ -230,7 +244,8 @@ make deploy-egress TAG=v26.724.1 EGRESS_REF=v26.724.1
 ```
 
 The resulting Action release is named `egress-v26.724.1`. The root
-`install.sh`/`uninstall.sh` files are used directly and are not Release assets.
+`install.sh`/`uninstall.sh` entrypoints and their `scripts/egress/` modules are
+served directly from the repository and are not Release assets.
 The same command publishes `sha-<egress_sha>`, the Cargo semantic version, and
 `latest` for the default branch. It never connects to or changes an Egress
 node. Create the node in Server and run one of its generated installation

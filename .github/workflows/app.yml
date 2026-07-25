@@ -152,14 +152,14 @@ jobs:
             args: --target aarch64-apple-darwin --config src-tauri/tauri.macos.conf.json --config src-tauri/tauri.ci.conf.json --bundles dmg --ci
             checksum-platform: macos
             checksum-arch: arm64
-            executable-path: app/src-tauri/target/aarch64-apple-darwin/release/bundle/macos/One Browser.app/Contents/MacOS/one-browser
+            executable-path: app/src-tauri/target/aarch64-apple-darwin/release/one-browser
           - name: macos-x64
             platform: macos-15-intel
             rust-target: x86_64-apple-darwin
             args: --target x86_64-apple-darwin --config src-tauri/tauri.macos.conf.json --config src-tauri/tauri.ci.conf.json --bundles dmg --ci
             checksum-platform: macos
             checksum-arch: x64
-            executable-path: app/src-tauri/target/x86_64-apple-darwin/release/bundle/macos/One Browser.app/Contents/MacOS/one-browser
+            executable-path: app/src-tauri/target/x86_64-apple-darwin/release/one-browser
 
     steps:
       - name: Checkout app

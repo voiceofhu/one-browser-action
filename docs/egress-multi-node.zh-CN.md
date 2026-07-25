@@ -47,13 +47,16 @@ make deploy-egress
 make deploy-egress TAG=v26.725.1317 EGRESS_REF=v26.725.1317
 ```
 
-公开的跨架构安装脚本是仓库根目录的普通文件：
+公开的跨架构入口保留在仓库根目录：
 
 - `install.sh`
 - `uninstall.sh`
 
-脚本不复制进 Release。`install.sh` 支持 `native`、`docker`、`amd64`、
-`arm64`，并接受可选的 `--version`；不传版本时安装最新版本。
+实际实现按职责拆分在 `scripts/egress/install/` 和
+`scripts/egress/uninstall/`。公开入口通过管道运行时，会先从同一个公开仓库加载对应
+模块，因此 Server 已生成的根目录脚本 URL 保持兼容。脚本不复制进 Release。
+`install.sh` 支持 `native`、`docker`、`amd64`、`arm64`，并接受可选的
+`--version`；不传版本时安装最新版本。
 
 ## 开发环境准备
 

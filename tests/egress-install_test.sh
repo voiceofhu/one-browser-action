@@ -155,6 +155,48 @@ mock_aaaa_only_dns_rejected() (
 )
 expect_failure "AAAA-only DNS is rejected" mock_aaaa_only_dns_rejected
 
+# shellcheck disable=SC2329
+mock_public_dns_fallback() (
+  query_ipv4_records() { return 0; }
+  query_public_ipv4_records() { printf '104.194.67.193\n'; }
+  log() { :; }
+  resolve_ipv4 egress-1.aicbe.com
+)
+[ "$(mock_public_dns_fallback)" = 104.194.67.193 ] || {
+  printf 'FAIL: public DNS fallback did not recover from a stale system resolver\n' >&2
+  exit 1
+}
+pass
+
+# shellcheck disable=SC2329
+mock_public_aaaa_fallback() (
+  query_ipv6_records() { return 0; }
+  query_public_ipv6_records() { printf '2001:db8::1\n'; }
+  resolve_ipv6 egress.example.com
+)
+[ "$(mock_public_aaaa_fallback)" = 2001:db8::1 ] || {
+  printf 'FAIL: public DNS fallback did not preserve IPv6 rejection checks\n' >&2
+  exit 1
+}
+pass
+
+# shellcheck disable=SC2329
+mock_doh_json_response() (
+  curl() {
+    printf '%s\n' \
+      '{"Status":0,"Answer":[{"name":"egress-1.aicbe.com.","type":1,"TTL":300,"data":"104.194.67.193"},{"name":"egress-1.aicbe.com.","type":28,"TTL":300,"data":"2001:db8::1"}]}'
+  }
+  query_public_dns_records \
+    egress-1.aicbe.com \
+    1 \
+    https://dns.google/resolve
+)
+[ "$(mock_doh_json_response)" = 104.194.67.193 ] || {
+  printf 'FAIL: DNS-over-HTTPS JSON response was not parsed by record type\n' >&2
+  exit 1
+}
+pass
+
 tmp_dir=$(mktemp -d)
 trap 'rm -rf "$tmp_dir"' EXIT INT TERM HUP
 
@@ -255,8 +297,8 @@ pass
 }
 pass
 : >"$ENV_FILE"
-[ "$(detect_installation_state)" = installed ] || {
-  printf 'FAIL: protected environment was not detected as installed\n' >&2
+[ "$(detect_installation_state)" = partial ] || {
+  printf 'FAIL: environment without an installation record was not detected as partial\n' >&2
   exit 1
 }
 pass
@@ -280,6 +322,11 @@ INSTALL_RECORD=$state_dir/.installation
 
 INSTALL_MODE=docker
 expect_success "complete Docker runtime files are detected" runtime_installation_complete
+[ "$(detect_installation_state)" = installed ] || {
+  printf 'FAIL: recorded complete Docker installation was not detected as installed\n' >&2
+  exit 1
+}
+pass
 INSTALL_MODE=native
 expect_failure "missing native runtime files are incomplete" runtime_installation_complete
 : >"$NATIVE_BINARY"
@@ -845,6 +892,7 @@ mock_up_to_date_installation() (
   prepare_runtime_config() {
     RESOLVED_VERSION=26.725.1317
   }
+  ensure_tls_configuration() { :; }
   installed_version() { printf '26.725.1317'; }
   runtime_installation_complete() { return 0; }
   write_service_env() { : >"$tmp_dir/up-to-date-env-written"; }
@@ -874,6 +922,7 @@ mock_outdated_installation() (
   prepare_runtime_config() {
     RESOLVED_VERSION=26.725.1317
   }
+  ensure_tls_configuration() { :; }
   installed_version() { printf '26.724.1'; }
   runtime_installation_complete() { return 0; }
   write_service_env() { : >"$tmp_dir/outdated-env-written"; }
@@ -889,6 +938,29 @@ expect_success "outdated installation is overwritten in place" \
   [ -e "$tmp_dir/outdated-runtime-started" ] &&
   [ -e "$tmp_dir/outdated-record-written" ] || {
   printf 'FAIL: outdated installation was not fully updated\n' >&2
+  exit 1
+}
+pass
+
+# shellcheck disable=SC2034,SC2329
+mock_missing_tls_repair() (
+  local calls=
+  log() { :; }
+  ensure_certificate_directory() { calls="${calls}directory "; }
+  verify_domain_points_here() {
+    [ "$1" = egress.example.com ] || return 1
+    calls="${calls}dns "
+  }
+  issue_and_install_certificate() { calls="${calls}certificate "; }
+  write_renewal_hook() { calls="${calls}hook"; }
+  CONFIG_TLS_ENABLED=true
+  CONFIG_DOMAIN=egress.example.com
+  CERT_DIR=$tmp_dir/missing-certs
+  ensure_tls_configuration
+  printf '%s' "$calls"
+)
+[ "$(mock_missing_tls_repair)" = 'directory dns certificate hook' ] || {
+  printf 'FAIL: missing TLS files were not repaired before runtime validation\n' >&2
   exit 1
 }
 pass

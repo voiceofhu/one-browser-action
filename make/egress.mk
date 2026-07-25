@@ -40,7 +40,8 @@ serve-egress-installer:
 		"  local install:      http://127.0.0.1:$(EGRESS_INSTALLER_PORT)/install.sh" \
 		"  local uninstall:    http://127.0.0.1:$(EGRESS_INSTALLER_PORT)/uninstall.sh" \
 		"  OrbStack install:   http://host.orb.internal:$(EGRESS_INSTALLER_PORT)/install.sh" \
-		"  OrbStack uninstall: http://host.orb.internal:$(EGRESS_INSTALLER_PORT)/uninstall.sh"
+		"  OrbStack uninstall: http://host.orb.internal:$(EGRESS_INSTALLER_PORT)/uninstall.sh" \
+		"  module base env:    ONE_BROWSER_EGRESS_SCRIPT_BASE_URL=http://host.orb.internal:$(EGRESS_INSTALLER_PORT)/scripts/egress"
 	@python3 -m http.server "$(EGRESS_INSTALLER_PORT)" \
 		--bind "$(EGRESS_INSTALLER_BIND)" \
 		--directory "$(PROJECT_ROOT)"

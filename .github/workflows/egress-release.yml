@@ -53,6 +53,7 @@ jobs:
         run: |
           set -Eeuo pipefail
           bash -n install.sh uninstall.sh \
+            scripts/egress/install/*.sh scripts/egress/uninstall/*.sh \
             tests/egress-install_test.sh tests/egress-uninstall_test.sh
           bash tests/egress-install_test.sh
           bash tests/egress-uninstall_test.sh

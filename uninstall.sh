@@ -1,169 +1,97 @@
 #!/usr/bin/env bash
 
-# Public One Browser Egress uninstaller for Debian and Ubuntu.
+# Stable public entrypoint. The implementation is split under
+# scripts/egress/uninstall so the production curl command can stay unchanged.
 
 set +x
 set -Eeuo pipefail
 
-INSTALL_DIR=/opt/one-browser-egress
-INSTALL_RECORD=$INSTALL_DIR/.installation
-ENV_FILE=$INSTALL_DIR/.env
-COMPOSE_FILE=$INSTALL_DIR/docker-compose.yml
-NATIVE_BINARY=/usr/local/bin/one-browser-egress
-NATIVE_SERVICE_FILE=/etc/systemd/system/one-browser-egress.service
-RENEWAL_HOOK=/etc/letsencrypt/renewal-hooks/deploy/one-browser-egress.sh
-RUN_DIR=/run/one-browser-egress-installer
+readonly ONE_BROWSER_EGRESS_DEFAULT_SCRIPT_BASE_URL='https://raw.githubusercontent.com/voiceofhu/one-browser-action/main/scripts/egress'
+readonly -a ONE_BROWSER_EGRESS_UNINSTALL_MODULES=(
+  common.sh
+  native.sh
+  docker.sh
+  main.sh
+)
 
-die() {
+egress_entrypoint_die() {
   printf 'Error: %s\n' "$*" >&2
   exit 1
 }
 
-log() {
-  printf '==> %s\n' "$*"
+egress_entrypoint_local_source_dir() {
+  local entrypoint_dir
+
+  [ -n "${BASH_SOURCE[0]:-}" ] || return 1
+  entrypoint_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd) ||
+    return 1
+  [ -f "$entrypoint_dir/scripts/egress/uninstall/main.sh" ] || return 1
+  printf '%s/scripts/egress/uninstall' "$entrypoint_dir"
 }
 
-show_help() {
-  cat <<'EOF'
-Uninstall One Browser Egress.
+egress_entrypoint_download_modules() {
+  local destination=$1
+  local base_url module
+  local -a curl_transport
 
-Usage:
-  uninstall.sh [--mode <native|docker>]
+  base_url=${ONE_BROWSER_EGRESS_SCRIPT_BASE_URL:-$ONE_BROWSER_EGRESS_DEFAULT_SCRIPT_BASE_URL}
+  base_url=${base_url%/}
+  case "$base_url" in
+    https://*)
+      curl_transport=(--proto '=https' --tlsv1.2)
+      ;;
+    http://127.0.0.1:*|http://localhost:*|http://host.orb.internal:*)
+      curl_transport=(--proto '=http')
+      ;;
+    *)
+      egress_entrypoint_die \
+        "ONE_BROWSER_EGRESS_SCRIPT_BASE_URL must use HTTPS or an approved local development host"
+      ;;
+  esac
 
-Options:
-  --mode       Optional safety check. When omitted, detect the installed mode.
-  -h, --help   Show this help.
-
-The Egress service, binary/container, and /opt/one-browser-egress state are
-removed. Docker itself and certificates managed by Certbot are preserved.
-EOF
+  command -v curl >/dev/null ||
+    egress_entrypoint_die "curl is required to load the Egress uninstaller"
+  for module in "${ONE_BROWSER_EGRESS_UNINSTALL_MODULES[@]}"; do
+    curl -q "${curl_transport[@]}" \
+      --fail --silent --show-error --no-location \
+      --connect-timeout 10 --max-time 30 --max-filesize 1048576 \
+      "$base_url/uninstall/$module" \
+      --output "$destination/$module" ||
+      egress_entrypoint_die "Unable to download Egress uninstaller module: $module"
+    [ -s "$destination/$module" ] ||
+      egress_entrypoint_die "Downloaded Egress uninstaller module is empty: $module"
+    chmod 0600 "$destination/$module"
+    /bin/bash -n "$destination/$module" ||
+      egress_entrypoint_die "Downloaded Egress uninstaller module has invalid syntax: $module"
+  done
 }
 
-validate_mode() {
-  [ "${1-}" = native ] || [ "${1-}" = docker ]
-}
+egress_entrypoint_load_modules() {
+  local source_dir module temporary_dir=
 
-read_record_value() {
-  local key=$1
-
-  [ -f "$INSTALL_RECORD" ] && [ ! -L "$INSTALL_RECORD" ] || return 1
-  awk -F= -v wanted="$key" '
-    $1 == wanted {
-      if (found) exit 2
-      found = 1
-      sub(/^[^=]*=/, "")
-      value = $0
-    }
-    END {
-      if (!found) exit 1
-      print value
-    }
-  ' "$INSTALL_RECORD"
-}
-
-detect_mode() {
-  local recorded
-
-  recorded=$(read_record_value runtime 2>/dev/null || true)
-  if validate_mode "$recorded"; then
-    printf '%s' "$recorded"
-  elif [ -e "$NATIVE_SERVICE_FILE" ] || [ -e "$NATIVE_BINARY" ]; then
-    printf 'native'
-  elif [ -e "$COMPOSE_FILE" ]; then
-    printf 'docker'
-  elif [ -f "$ENV_FILE" ] && grep -q '^DOCKER_IMAGE=' "$ENV_FILE"; then
-    printf 'docker'
-  elif [ -e "$ENV_FILE" ]; then
-    printf 'native'
+  source_dir=$(egress_entrypoint_local_source_dir 2>/dev/null || true)
+  if [ -z "$source_dir" ]; then
+    temporary_dir=$(mktemp -d "/tmp/one-browser-egress-uninstaller.XXXXXX")
+    chmod 0700 "$temporary_dir"
+    trap 'rm -rf -- "$temporary_dir"' EXIT
+    trap 'exit 130' INT
+    trap 'exit 143' TERM HUP
+    egress_entrypoint_download_modules "$temporary_dir"
+    source_dir=$temporary_dir
   fi
-}
 
-uninstall_native() {
-  command -v systemctl >/dev/null 2>&1 ||
-    die "systemctl is required to remove the native Egress service"
-  systemctl stop one-browser-egress >/dev/null 2>&1 || true
-  if systemctl is-active --quiet one-browser-egress; then
-    die "The native Egress service could not be stopped"
-  fi
-  systemctl disable one-browser-egress >/dev/null 2>&1 || true
-  rm -f -- "$NATIVE_SERVICE_FILE" "$NATIVE_BINARY"
-  systemctl daemon-reload
-  systemctl reset-failed one-browser-egress >/dev/null 2>&1 || true
-  if id one-browser-egress >/dev/null 2>&1 && command -v userdel >/dev/null 2>&1; then
-    userdel one-browser-egress >/dev/null 2>&1 || true
-  fi
-}
-
-uninstall_docker() {
-  command -v docker >/dev/null 2>&1 ||
-    die "Docker is required to remove the Docker Egress container"
-  docker info >/dev/null 2>&1 ||
-    die "Docker daemon is unavailable; start it before uninstalling Egress"
-  if [ -f "$COMPOSE_FILE" ] && [ -f "$ENV_FILE" ] &&
-    docker compose version >/dev/null 2>&1; then
-    docker compose --project-name one-browser-egress \
-      --env-file "$ENV_FILE" -f "$COMPOSE_FILE" \
-      down --remove-orphans >/dev/null ||
-      die "Docker Compose could not remove Egress"
-  elif docker container inspect one-browser-egress >/dev/null 2>&1; then
-    docker rm --force one-browser-egress >/dev/null ||
-      die "Docker could not remove the Egress container"
-  fi
-  docker container inspect one-browser-egress >/dev/null 2>&1 &&
-    die "The Docker Egress container still exists after uninstall"
-  return 0
-}
-
-main() {
-  local detected_mode requested_mode=
-
-  while [ "$#" -gt 0 ]; do
-    case "$1" in
-      --mode)
-        [ "$#" -ge 2 ] || die "--mode requires a value"
-        [ -z "$requested_mode" ] || die "--mode may be supplied only once"
-        requested_mode=$2
-        shift 2
-        ;;
-      -h|--help)
-        show_help
-        return 0
-        ;;
-      *)
-        die "Unknown argument: $1"
-        ;;
-    esac
+  for module in "${ONE_BROWSER_EGRESS_UNINSTALL_MODULES[@]}"; do
+    # shellcheck disable=SC1090
+    . "$source_dir/$module"
   done
 
-  if [ -n "$requested_mode" ]; then
-    validate_mode "$requested_mode" || die "--mode must be native or docker"
+  if [ -n "$temporary_dir" ]; then
+    rm -rf -- "$temporary_dir"
+    trap - EXIT INT TERM HUP
   fi
-  [ "${EUID:-$(id -u)}" -eq 0 ] ||
-    die "Run this uninstaller as root (the generated command uses sudo)"
-  umask 077
-  install -d -m 0700 -o root -g root "$RUN_DIR"
-  exec 9>"$RUN_DIR/install.lock"
-  flock -n 9 || die "An Egress installation or uninstall is already running"
-
-  detected_mode=$(detect_mode)
-  if [ -z "$detected_mode" ]; then
-    log "No One Browser Egress installation was found"
-    return 0
-  fi
-  if [ -n "$requested_mode" ] && [ "$requested_mode" != "$detected_mode" ]; then
-    die "Installed mode is $detected_mode, not $requested_mode"
-  fi
-
-  log "Stopping and removing the $detected_mode Egress runtime"
-  if [ "$detected_mode" = native ]; then
-    uninstall_native
-  else
-    uninstall_docker
-  fi
-  rm -f -- "$RENEWAL_HOOK"
-  rm -rf -- "$INSTALL_DIR"
-  log "One Browser Egress was uninstalled; Docker and Certbot certificates were preserved"
 }
+
+egress_entrypoint_load_modules
 
 if [ "${ONE_BROWSER_UNINSTALLER_LIBRARY_ONLY:-0}" != 1 ]; then
   main "$@"

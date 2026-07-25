@@ -44,7 +44,17 @@ query_ipv4_records() {
   local domain=$1
 
   dig +time=5 +tries=2 +short "$domain" A 2>/dev/null |
-    awk '/^([0-9]{1,3}\.){3}[0-9]{1,3}$/ {print}' | sort -u
+    filter_ipv4_records
+}
+
+filter_ipv4_records() {
+  local record
+
+  while IFS= read -r record; do
+    if validate_ipv4 "$record"; then
+      printf '%s\n' "$record"
+    fi
+  done | sort -u
 }
 
 query_public_dns_records() {
@@ -79,7 +89,7 @@ query_public_ipv4_records() {
     query_public_dns_records "$domain" 1 'https://dns.google/resolve' || true
     query_public_dns_records "$domain" 1 'https://cloudflare-dns.com/dns-query' || true
   } |
-    awk '/^([0-9]{1,3}\.){3}[0-9]{1,3}$/ {print}' | sort -u
+    filter_ipv4_records
 }
 
 resolve_ipv4() {

@@ -293,7 +293,7 @@ bootstrap() {
     load_partial_enrollment_identity refresh_existing_enrollment \
     install_unconfigured_enrollment \
     write_service_env write_compose_file \
-    discover_public_ip canonicalize_ipv6 query_ipv4_records \
+    discover_public_ip canonicalize_ipv6 filter_ipv4_records query_ipv4_records \
     query_public_dns_records query_public_ipv4_records resolve_ipv4 \
     query_ipv6_records query_public_ipv6_records resolve_ipv6 \
     verify_domain_points_here \

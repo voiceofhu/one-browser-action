@@ -155,6 +155,20 @@ mock_aaaa_only_dns_rejected() (
 )
 expect_failure "AAAA-only DNS is rejected" mock_aaaa_only_dns_rejected
 
+filtered_ipv4=$(
+  printf '%s\n' \
+    104.194.67.193 \
+    104.194.67.193 \
+    999.194.67.193 \
+    not-an-address |
+    filter_ipv4_records
+)
+[ "$filtered_ipv4" = 104.194.67.193 ] || {
+  printf 'FAIL: portable IPv4 filtering did not retain only valid unique addresses\n' >&2
+  exit 1
+}
+pass
+
 # shellcheck disable=SC2329
 mock_public_dns_fallback() (
   query_ipv4_records() { return 0; }

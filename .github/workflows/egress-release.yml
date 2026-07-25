@@ -47,6 +47,16 @@ jobs:
           fetch-depth: 1
           persist-credentials: false
 
+      - name: Validate public Egress installer
+        working-directory: action
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          bash -n install.sh uninstall.sh \
+            tests/egress-install_test.sh tests/egress-uninstall_test.sh
+          bash tests/egress-install_test.sh
+          bash tests/egress-uninstall_test.sh
+
       - name: Resolve immutable Egress source
         id: source
         shell: bash
@@ -67,8 +77,10 @@ jobs:
         include:
           - arch: amd64
             runner: ubuntu-latest
+            rust_target: x86_64-unknown-linux-musl
           - arch: arm64
             runner: ubuntu-24.04-arm
+            rust_target: aarch64-unknown-linux-musl
 
     steps:
       - name: Checkout Egress
@@ -84,31 +96,39 @@ jobs:
 
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust_target }}
 
-      - name: Validate installer
-        if: matrix.arch == 'amd64'
-        working-directory: egress
+      - name: Install static Linux toolchain
         shell: bash
         run: |
           set -Eeuo pipefail
-          bash -n install.sh deploy/tests/install_test.sh
-          bash deploy/tests/install_test.sh
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends musl-tools
 
-      - name: Build Egress binary
+      - name: Build static Egress binary
         working-directory: egress
         shell: bash
-        run: cargo build --release --locked
+        env:
+          RUST_TARGET: ${{ matrix.rust_target }}
+        run: cargo build --release --locked --target "$RUST_TARGET"
 
       - name: Prepare binary asset
         shell: bash
         env:
           ARCH: ${{ matrix.arch }}
+          RUST_TARGET: ${{ matrix.rust_target }}
         run: |
           set -Eeuo pipefail
           install -d release-assets
           install -m 0755 \
-            egress/target/release/one-browser-egress \
+            "egress/target/$RUST_TARGET/release/one-browser-egress" \
             "release-assets/one-browser-egress-linux-$ARCH"
+          file "release-assets/one-browser-egress-linux-$ARCH" |
+            grep -q 'static' || {
+              echo "Native Egress asset is not statically linked." >&2
+              exit 1
+            }
 
       - name: Upload binary asset
         uses: actions/upload-artifact@v4
@@ -126,13 +146,10 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout Egress installer
+      - name: Checkout public Egress installer
         uses: actions/checkout@v4
         with:
-          repository: ${{ needs.resolve.outputs.egress_repository }}
-          ref: ${{ needs.resolve.outputs.egress_sha }}
-          path: egress
-          token: ${{ secrets.GH_TOKEN }}
+          path: action
           clean: true
           fetch-depth: 1
           persist-credentials: false
@@ -150,18 +167,15 @@ jobs:
           PACKAGE_VERSION: ${{ needs.resolve.outputs.package_version }}
         run: |
           set -Eeuo pipefail
-          install -m 0755 egress/install.sh dist/install.sh
           (
             cd dist
             sha256sum \
-              install.sh \
               one-browser-egress-linux-amd64 \
               one-browser-egress-linux-arm64 \
               >SHA256SUMS
           )
           bundle="one-browser-egress-$PACKAGE_VERSION.tar.gz"
           tar -C dist -czf "dist/$bundle" \
-            install.sh \
             one-browser-egress-linux-amd64 \
             one-browser-egress-linux-arm64 \
             SHA256SUMS
@@ -193,7 +207,11 @@ jobs:
             echo "Egress packages may only be published by $RELEASE_REPOSITORY." >&2
             exit 1
           }
-          release_body="Egress source: $EGRESS_REPOSITORY@$EGRESS_SHA"
+          release_body="$(
+            printf 'Egress source: %s@%s\nInstaller source: %s@%s' \
+              "$EGRESS_REPOSITORY" "$EGRESS_SHA" \
+              "$RELEASE_REPOSITORY" "$RELEASE_SHA"
+          )"
           if existing_release="$(gh release view "$RELEASE_TAG" \
             --repo "$RELEASE_REPOSITORY" \
             --json body,assets 2>/dev/null)"; then
@@ -202,7 +220,7 @@ jobs:
               echo "Release $RELEASE_TAG belongs to a different Egress source." >&2
               exit 1
             }
-            for asset in install.sh one-browser-egress-linux-amd64 \
+            for asset in one-browser-egress-linux-amd64 \
               one-browser-egress-linux-arm64 \
               "one-browser-egress-$PACKAGE_VERSION.tar.gz" SHA256SUMS; do
               jq -e --arg asset "$asset" \

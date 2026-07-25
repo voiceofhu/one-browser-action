@@ -15,6 +15,8 @@ DEPLOY ?= true
 
 EGRESS_REPOSITORY ?= voiceofhu/one-browser-egress
 EGRESS_REF ?=
+EGRESS_INSTALLER_BIND ?= 0.0.0.0
+EGRESS_INSTALLER_PORT ?= 27610
 
 APP_REPOSITORY ?= voiceofhu/one-browser-app
 APP_REF ?=

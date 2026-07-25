@@ -1,6 +1,6 @@
 EGRESS_POSITIONAL_TARGET := $(filter 1 2 3 all,$(MAKECMDGOALS))
 
-.PHONY: deploy-server egress deploy-egress deploy-app debug-app check-token 1 2 3 all
+.PHONY: deploy-server egress serve-egress-installer deploy-egress deploy-app debug-app check-token 1 2 3 all
 
 define require_gh_token
 if [ -z "$${GH_TOKEN:-}" ]; then \
@@ -156,7 +156,25 @@ egress:
 	case "$(DRY_RUN)" in true|1|yes|y) exit 0 ;; esac; \
 	payload="$$(ruby -rjson -e 'puts JSON.generate({ref: ARGV[0], inputs: {egress_repository: ARGV[1], egress_ref: ARGV[2], version_tag: ARGV[3]}})' "$(ACTION_REF)" "$(EGRESS_REPOSITORY)" "$$egress_ref" "$$tag")"; \
 	$(call dispatch_workflow,egress-release.yml); \
-	echo "Triggered egress-release.yml in $(ACTION_REPOSITORY)"
+	echo "Triggered egress-release.yml in $(ACTION_REPOSITORY)"; \
+	payload="$$(ruby -rjson -e 'puts JSON.generate({ref: ARGV[0], inputs: {egress_ref: ARGV[1], deploy: false, deploy_targets: \"all\", rollout: \"full\"}})' "$(ACTION_REF)" "$$egress_ref")"; \
+	$(call dispatch_workflow,egress.yml); \
+	echo "Triggered egress.yml build-only packaging in $(ACTION_REPOSITORY)"
+
+serve-egress-installer:
+	@command -v python3 >/dev/null 2>&1 || { \
+		echo "python3 is required to serve the development installer." >&2; \
+		exit 1; \
+	}
+	@printf '%s\n' \
+		"Serving the Egress scripts for development:" \
+		"  local install:      http://127.0.0.1:$(EGRESS_INSTALLER_PORT)/install.sh" \
+		"  local uninstall:    http://127.0.0.1:$(EGRESS_INSTALLER_PORT)/uninstall.sh" \
+		"  OrbStack install:   http://host.orb.internal:$(EGRESS_INSTALLER_PORT)/install.sh" \
+		"  OrbStack uninstall: http://host.orb.internal:$(EGRESS_INSTALLER_PORT)/uninstall.sh"
+	@python3 -m http.server "$(EGRESS_INSTALLER_PORT)" \
+		--bind "$(EGRESS_INSTALLER_BIND)" \
+		--directory .
 
 deploy-egress:
 	@set -euo pipefail; \

@@ -44,10 +44,12 @@ jobs:
     outputs:
       egress_repository: ${{ steps.refs.outputs.egress_repository }}
       egress_sha: ${{ steps.refs.outputs.egress_sha }}
+      package_version: ${{ steps.refs.outputs.package_version }}
       image_ref: ${{ steps.refs.outputs.image_ref }}
       image_revision_tag: ${{ steps.refs.outputs.image_revision_tag }}
       image_build_tag: ${{ steps.refs.outputs.image_build_tag }}
       deploy: ${{ steps.refs.outputs.deploy }}
+      publish_latest: ${{ steps.refs.outputs.publish_latest }}
       should_build: ${{ steps.plan.outputs.should_build }}
       gh_username: ${{ steps.github-identity.outputs.login }}
 
@@ -154,6 +156,13 @@ jobs:
           platforms: ${{ matrix.platform }}
           push: true
           tags: ${{ needs.resolve.outputs.image_ref }}:${{ needs.resolve.outputs.image_build_tag }}-${{ matrix.suffix }}
+          labels: |
+            org.opencontainers.image.title=One Browser Egress
+            org.opencontainers.image.description=One Browser Egress data-plane image, packaged by the public one-browser-action repository
+            org.opencontainers.image.source=https://github.com/voiceofhu/one-browser-action
+            org.opencontainers.image.documentation=https://github.com/voiceofhu/one-browser-action/blob/main/README.md
+            org.opencontainers.image.revision=${{ needs.resolve.outputs.egress_sha }}
+            org.opencontainers.image.version=${{ needs.resolve.outputs.image_revision_tag }}
           cache-from: type=gha,scope=one-browser-egress-${{ matrix.suffix }}
           cache-to: type=gha,scope=one-browser-egress-${{ matrix.suffix }},mode=max
 
@@ -199,8 +208,13 @@ jobs:
         env:
           IMAGE: ${{ needs.resolve.outputs.image_ref }}
           IMAGE_REVISION_TAG: ${{ needs.resolve.outputs.image_revision_tag }}
+          IMAGE_VERSION: ${{ needs.resolve.outputs.package_version }}
           IMAGE_BUILD_TAG: ${{ needs.resolve.outputs.image_build_tag }}
           SHOULD_BUILD: ${{ needs.resolve.outputs.should_build }}
+          PUBLISH_LATEST: ${{ needs.resolve.outputs.publish_latest }}
+          IMAGE_SOURCE: https://github.com/voiceofhu/one-browser-action
+          IMAGE_DESCRIPTION: One Browser Egress data-plane image, packaged by the public one-browser-action repository
+          IMAGE_REVISION: ${{ needs.resolve.outputs.egress_sha }}
         run: bash action/.github/scripts/publish-egress-manifests.sh
 
   targets:

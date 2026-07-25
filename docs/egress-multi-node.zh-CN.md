@@ -63,9 +63,13 @@ Workflow Dispatch API。Action 运行时使用 Repository `GH_TOKEN` 登录私�
 完成拉取后会退出登录，并且不会把 Token 传给 Egress 容器。
 
 安装脚本和原生二进制也统一由 `one-browser-action` 打包。在本仓库执行
-`make egress` 会触发 `.github/workflows/egress-release.yml`，从固定的 Egress
-commit 构建 amd64/arm64 二进制，并在 Action 仓库发布
-`egress-v<版本>` Release。Egress 源码仓库不保存 GitHub workflow。
+`make egress` 会同时触发 `.github/workflows/egress-release.yml` 和不部署节点的
+`.github/workflows/egress.yml` build-only 任务，从固定的 Egress commit 构建
+amd64/arm64 原生二进制与多架构 Docker 镜像，并在 Action 仓库发布
+`egress-v<版本>` Release。公开的跨架构脚本是根目录的普通代码文件
+`install.sh` 和 `uninstall.sh`，不复制进 Release。`install.sh` 支持
+`--mode native|docker` 和可选 `--version`，不传版本默认安装最新版本；对应测试
+放在 `tests/egress-install_test.sh` 与 `tests/egress-uninstall_test.sh`。
 
 Server deploy job 绑定 `egress-3` Environment，复用其中的
 `DEPLOY_SSH_KEY`、`DEPLOY_KNOWN_HOSTS`，连接同一台

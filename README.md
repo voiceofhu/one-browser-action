@@ -70,14 +70,20 @@ optional version or `latest` aliases.
 
 File: `.github/workflows/egress-release.yml`
 
-This workflow is dispatched by `make egress`. It resolves an immutable
+This workflow is dispatched by `make egress` alongside a build-only
+`egress.yml` run. It resolves an immutable
 `one-browser-egress` commit, verifies the optional requested version against
 that commit's `Cargo.toml`, and publishes an immutable
 `egress-v<version>` Release in `voiceofhu/one-browser-action`.
+The public, architecture-independent `install.sh` and `uninstall.sh` remain
+ordinary files at the repository root; they are not copied into the Release.
+`install.sh` detects `amd64`/`arm64`, supports `--mode native|docker`, and
+accepts an optional `--version`. Omitting the version installs `latest`. Native
+assets are built against musl so Debian 12 and supported Ubuntu versions do not
+depend on the runner's newer glibc.
 
 Release assets:
 
-- `install.sh`
 - `one-browser-egress-linux-amd64`
 - `one-browser-egress-linux-arm64`
 - `one-browser-egress-<version>.tar.gz`
@@ -86,6 +92,27 @@ Release assets:
 If that Release already exists, its recorded source SHA and complete asset list
 must match. The workflow never replaces existing assets. The same complete
 `dist` directory is also retained as an Action run artifact for 30 days.
+
+Validate the public installer locally with:
+
+```bash
+bash -n install.sh uninstall.sh tests/egress-*_test.sh
+shellcheck install.sh uninstall.sh tests/egress-*_test.sh
+tests/egress-install_test.sh
+tests/egress-uninstall_test.sh
+```
+
+To inspect installer changes independently before publishing a Release, serve
+the exact public source tree over HTTP:
+
+```bash
+make serve-egress-installer
+```
+
+This exposes the working-tree `install.sh` and `uninstall.sh` under
+`http://host.orb.internal:27610/`. Generated Server commands use the public
+root files from `raw.githubusercontent.com`; the local helper is only for
+editing and testing the scripts.
 
 ### Egress Deploy
 
@@ -110,6 +137,8 @@ run-specific staging tags, so concurrent runs cannot mix their amd64 and arm64
 artifacts. A queued manifest job validates or publishes:
 
 - `sha-<egress_sha>` containing both `linux/amd64` and `linux/arm64`.
+- `<Cargo.toml version>` for `install.sh --version <version>`.
+- `latest` when the workflow resolves the Egress default branch.
 
 The workflow never force-overwrites this commit-addressed tag and fails closed
 when registry inspection fails for any reason other than a confirmed missing
@@ -214,7 +243,7 @@ Build without deploying:
 make deploy-server TAG=v26.709.1542 DEPLOY=false
 ```
 
-Package Egress installer and native Linux binaries:
+Package native Linux binaries and the multi-platform Docker image:
 
 ```bash
 make egress
@@ -227,8 +256,11 @@ version from `Cargo.toml`. Pin both when preparing a specific package:
 make egress TAG=v26.724.1 EGRESS_REF=v26.724.1
 ```
 
-The resulting Action release is named `egress-v26.724.1`. Packaging and node
-deployment are separate operations.
+The resulting Action release is named `egress-v26.724.1`. The root
+`install.sh`/`uninstall.sh` files are used directly and are not Release assets.
+The same `make egress` call also publishes the Docker semantic-version alias
+and, for the default branch, `latest`; it does not deploy any node. Packaging
+and node deployment are separate operations.
 
 Deploy Egress node 3:
 
@@ -441,30 +473,17 @@ Compose file, but intentionally does not rewrite host DNS or firewall policy.
 
 #### Full host bootstrap
 
-For a fresh Debian amd64 host, use
-`.github/actions/egress/bootstrap-debian-amd64.sh`. It installs Docker Engine,
-Compose, Nginx, Certbot, and OpenSSH; creates `gh-deploy`; prepares the
-persistent directory, `.env`, public certificate, and renewal hook; and leaves
-the first container deployment to this Action. The deployment account has an
-impossible password marker instead of a locked shadow entry, so OpenSSH accepts
-its configured public key while password login remains unavailable. Certificate
-issuance always uses a domain-specific Nginx webroot virtual host, so existing
-Nginx websites remain on the same listener. Run it without configuration
-arguments:
+For a fresh Debian or Ubuntu amd64/arm64 host, use one of the commands generated
+by Server. The root script supports both runtime backends:
 
 ```bash
-sudo bash .github/actions/egress/bootstrap-debian-amd64.sh
+install.sh --mode native --control-url <origin> --tls-enabled <true|false>
+install.sh --mode docker --control-url <origin> --tls-enabled <true|false>
 ```
 
-One-line fresh-host bootstrap from GitHub. The script is downloaded first so
-its interactive questions continue to read from the terminal:
-
-```bash
-curl -fsSL \
-  https://github.com/voiceofhu/one-browser-action/raw/refs/heads/main/.github/actions/egress/bootstrap-debian-amd64.sh \
-  -o /tmp/bootstrap-debian-amd64.sh && \
-  sudo bash /tmp/bootstrap-debian-amd64.sh
-```
+Add `--version 26.724.1` only when a specific runtime version is required.
+Without it, the newest native Release or the `latest` Docker image is used.
+Remove either installation with the generated `uninstall.sh` command.
 
 #### Deployment account only
 

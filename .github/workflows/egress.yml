@@ -1,21 +1,36 @@
-name: Egress Image
-run-name: Egress image · ${{ inputs.egress_ref || 'default branch' }}
+name: Egress Release
+run-name: Egress release · ${{ inputs.version_tag || inputs.egress_ref || 'default branch' }}
 
 on:
   workflow_dispatch:
     inputs:
+      egress_repository:
+        description: one-browser-egress repository
+        required: false
+        default: voiceofhu/one-browser-egress
       egress_ref:
         description: one-browser-egress branch, tag, or commit. Empty means the default branch.
         required: false
+      version_tag:
+        description: Optional version guard. Empty reads Cargo.toml from the resolved commit.
+        required: false
 
 permissions:
-  contents: read
+  contents: write
   packages: write
 
+concurrency:
+  group: egress-${{ inputs.version_tag || inputs.egress_ref || 'default' }}
+  cancel-in-progress: false
+
 env:
+  CI: true
+  CARGO_INCREMENTAL: 0
+  CARGO_TERM_COLOR: always
   REGISTRY: ghcr.io
   EGRESS_REPOSITORY: voiceofhu/one-browser-egress
   EGRESS_IMAGE_NAME: voiceofhu/one-browser-egress
+  RELEASE_REPOSITORY: voiceofhu/one-browser-action
 
 jobs:
   resolve:
@@ -25,11 +40,12 @@ jobs:
       egress_repository: ${{ steps.refs.outputs.egress_repository }}
       egress_sha: ${{ steps.refs.outputs.egress_sha }}
       package_version: ${{ steps.refs.outputs.package_version }}
+      release_tag: ${{ steps.refs.outputs.release_tag }}
       image_ref: ${{ steps.refs.outputs.image_ref }}
       image_revision_tag: ${{ steps.refs.outputs.image_revision_tag }}
       image_build_tag: ${{ steps.refs.outputs.image_build_tag }}
       publish_latest: ${{ steps.refs.outputs.publish_latest }}
-      should_build: ${{ steps.plan.outputs.should_build }}
+      should_build_image: ${{ steps.plan.outputs.should_build }}
       gh_username: ${{ steps.github-identity.outputs.login }}
 
     steps:
@@ -41,13 +57,25 @@ jobs:
           fetch-depth: 1
           persist-credentials: false
 
-      - name: Resolve source ref
+      - name: Validate public Egress installer
+        working-directory: action
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          bash -n install.sh uninstall.sh \
+            scripts/egress/install/*.sh scripts/egress/uninstall/*.sh \
+            tests/egress-install_test.sh tests/egress-uninstall_test.sh
+          bash tests/egress-install_test.sh
+          bash tests/egress-uninstall_test.sh
+
+      - name: Resolve immutable Egress source
         id: refs
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GH_TOKEN }}
-          EGRESS_REPOSITORY: ${{ env.EGRESS_REPOSITORY }}
+          EGRESS_REPOSITORY_INPUT: ${{ inputs.egress_repository }}
           EGRESS_REF_INPUT: ${{ inputs.egress_ref }}
+          VERSION_TAG_INPUT: ${{ inputs.version_tag }}
           IMAGE_NAME: ${{ env.EGRESS_IMAGE_NAME }}
         run: bash action/.github/scripts/resolve-egress-release.sh
 
@@ -68,7 +96,7 @@ jobs:
           username: ${{ steps.github-identity.outputs.login }}
           password: ${{ secrets.GH_TOKEN }}
 
-      - name: Decide whether to build
+      - name: Decide whether to build image
         id: plan
         shell: bash
         env:
@@ -88,10 +116,81 @@ jobs:
             echo "should_build=true" >> "$GITHUB_OUTPUT"
           fi
 
-  build:
+  build_native:
+    name: Package Linux ${{ matrix.arch }}
+    needs: resolve
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+            rust_target: x86_64-unknown-linux-musl
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+            rust_target: aarch64-unknown-linux-musl
+
+    steps:
+      - name: Checkout Egress
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ needs.resolve.outputs.egress_repository }}
+          ref: ${{ needs.resolve.outputs.egress_sha }}
+          path: egress
+          token: ${{ secrets.GH_TOKEN }}
+          clean: true
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust_target }}
+
+      - name: Install static Linux toolchain
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends musl-tools
+
+      - name: Build static Egress binary
+        working-directory: egress
+        shell: bash
+        env:
+          RUST_TARGET: ${{ matrix.rust_target }}
+        run: cargo build --release --locked --target "$RUST_TARGET"
+
+      - name: Prepare binary asset
+        shell: bash
+        env:
+          ARCH: ${{ matrix.arch }}
+          RUST_TARGET: ${{ matrix.rust_target }}
+        run: |
+          set -Eeuo pipefail
+          install -d release-assets
+          install -m 0755 \
+            "egress/target/$RUST_TARGET/release/one-browser-egress" \
+            "release-assets/one-browser-egress-linux-$ARCH"
+          file "release-assets/one-browser-egress-linux-$ARCH" |
+            grep -q 'static' || {
+              echo "Native Egress asset is not statically linked." >&2
+              exit 1
+            }
+
+      - name: Upload binary asset
+        uses: actions/upload-artifact@v4
+        with:
+          name: egress-linux-${{ matrix.arch }}
+          path: release-assets/one-browser-egress-linux-${{ matrix.arch }}
+          if-no-files-found: error
+          retention-days: 1
+
+  build_image:
     name: Build ${{ matrix.suffix }} image
     needs: resolve
-    if: needs.resolve.outputs.should_build == 'true'
+    if: needs.resolve.outputs.should_build_image == 'true'
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
@@ -144,16 +243,120 @@ jobs:
           cache-from: type=gha,scope=one-browser-egress-${{ matrix.suffix }}
           cache-to: type=gha,scope=one-browser-egress-${{ matrix.suffix }},mode=max
 
-  publish:
+  publish_release:
+    name: Publish Egress package
+    needs:
+      - resolve
+      - build_native
+    runs-on: ubuntu-latest
+    concurrency:
+      group: egress-release-${{ needs.resolve.outputs.release_tag }}
+      cancel-in-progress: false
+
+    steps:
+      - name: Checkout public Egress installer
+        uses: actions/checkout@v4
+        with:
+          path: action
+          clean: true
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Download binary assets
+        uses: actions/download-artifact@v4
+        with:
+          pattern: egress-linux-*
+          path: dist
+          merge-multiple: true
+
+      - name: Assemble checksummed package
+        shell: bash
+        env:
+          PACKAGE_VERSION: ${{ needs.resolve.outputs.package_version }}
+        run: |
+          set -Eeuo pipefail
+          (
+            cd dist
+            sha256sum \
+              one-browser-egress-linux-amd64 \
+              one-browser-egress-linux-arm64 \
+              >SHA256SUMS
+          )
+          bundle="one-browser-egress-$PACKAGE_VERSION.tar.gz"
+          tar -C dist -czf "dist/$bundle" \
+            one-browser-egress-linux-amd64 \
+            one-browser-egress-linux-arm64 \
+            SHA256SUMS
+          (
+            cd dist
+            sha256sum "$bundle" >>SHA256SUMS
+          )
+
+      - name: Upload complete Egress package to this Action run
+        uses: actions/upload-artifact@v4
+        with:
+          name: one-browser-egress-${{ needs.resolve.outputs.package_version }}
+          path: dist
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Publish immutable Action release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+          RELEASE_SHA: ${{ github.sha }}
+          RELEASE_TAG: ${{ needs.resolve.outputs.release_tag }}
+          PACKAGE_VERSION: ${{ needs.resolve.outputs.package_version }}
+          EGRESS_REPOSITORY: ${{ needs.resolve.outputs.egress_repository }}
+          EGRESS_SHA: ${{ needs.resolve.outputs.egress_sha }}
+        run: |
+          set -Eeuo pipefail
+          test "$GITHUB_REPOSITORY" = "$RELEASE_REPOSITORY" || {
+            echo "Egress packages may only be published by $RELEASE_REPOSITORY." >&2
+            exit 1
+          }
+          release_body="$(
+            printf 'Egress source: %s@%s' \
+              "$EGRESS_REPOSITORY" "$EGRESS_SHA"
+          )"
+          if existing_release="$(gh release view "$RELEASE_TAG" \
+            --repo "$RELEASE_REPOSITORY" \
+            --json body,assets 2>/dev/null)"; then
+            existing_source="$(jq -r '.body // "" | split("\n")[0]' <<<"$existing_release")"
+            test "$existing_source" = "$release_body" || {
+              echo "Release $RELEASE_TAG belongs to a different Egress source." >&2
+              exit 1
+            }
+            for asset in one-browser-egress-linux-amd64 \
+              one-browser-egress-linux-arm64 \
+              "one-browser-egress-$PACKAGE_VERSION.tar.gz" SHA256SUMS; do
+              jq -e --arg asset "$asset" \
+                '.assets | any(.[]; .name == $asset)' \
+                <<<"$existing_release" >/dev/null || {
+                  echo "Release $RELEASE_TAG is incomplete; refusing to mutate it." >&2
+                  exit 1
+                }
+            done
+            echo "Immutable Egress release $RELEASE_TAG already exists."
+            exit 0
+          fi
+
+          gh release create "$RELEASE_TAG" dist/* \
+            --repo "$RELEASE_REPOSITORY" \
+            --target "$RELEASE_SHA" \
+            --title "One Browser Egress $RELEASE_TAG" \
+            --notes "$release_body"
+
+  publish_image:
     name: Publish Egress manifest
     needs:
       - resolve
-      - build
+      - build_image
     if: >-
       always() &&
       !cancelled() &&
       needs.resolve.result == 'success' &&
-      (needs.resolve.outputs.should_build == 'false' || needs.build.result == 'success')
+      (needs.resolve.outputs.should_build_image == 'false' || needs.build_image.result == 'success')
     runs-on: ubuntu-latest
     concurrency:
       group: one-browser-egress-manifest
@@ -185,7 +388,7 @@ jobs:
           IMAGE_REVISION_TAG: ${{ needs.resolve.outputs.image_revision_tag }}
           IMAGE_VERSION: ${{ needs.resolve.outputs.package_version }}
           IMAGE_BUILD_TAG: ${{ needs.resolve.outputs.image_build_tag }}
-          SHOULD_BUILD: ${{ needs.resolve.outputs.should_build }}
+          SHOULD_BUILD: ${{ needs.resolve.outputs.should_build_image }}
           PUBLISH_LATEST: ${{ needs.resolve.outputs.publish_latest }}
           IMAGE_SOURCE: https://github.com/voiceofhu/one-browser-action
           IMAGE_DESCRIPTION: One Browser Egress data-plane image, packaged by the public one-browser-action repository

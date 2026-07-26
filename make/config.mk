@@ -11,11 +11,27 @@ ACTION_REF ?= main
 GITHUB_API_URL ?= https://api.github.com
 TAG ?=
 VERSION_TAG ?= $(TAG)
+VERSION ?=
 DRY_RUN ?= false
+
+# 相邻源码仓库与统一发布版本。VERSION、TAG、VERSION_TAG 均可覆盖自动版本，
+# 最终始终规范化为不带 v 前缀的三段 SemVer。
+SOURCE_ROOT ?= $(abspath $(PROJECT_ROOT)/..)
+SERVER_DIR ?= $(SOURCE_ROOT)/one-browser-server
+EGRESS_DIR ?= $(SOURCE_ROOT)/one-browser-egress
+APP_DIR ?= $(SOURCE_ROOT)/one-browser-app
+GENERATED_VERSION ?= $(shell node -e "\
+  const d=new Date(new Date().toLocaleString('en-US',{timeZone:'Asia/Shanghai'}));\
+  const stripLeadingZero=value=>String(Number(value));\
+  const year=String(d.getFullYear()).slice(-2);\
+  const monthDay=String(d.getMonth()+1).padStart(2,'0')+String(d.getDate()).padStart(2,'0');\
+  const hourMinute=String(d.getHours()).padStart(2,'0')+String(d.getMinutes()).padStart(2,'0');\
+  process.stdout.write([year,monthDay,hourMinute].map(stripLeadingZero).join('.'));\
+")
+RELEASE_VERSION = $(patsubst v%,%,$(strip $(if $(VERSION),$(VERSION),$(if $(VERSION_TAG),$(VERSION_TAG),$(GENERATED_VERSION)))))
 
 # Server 发布输入。
 SERVER_REPOSITORY ?= voiceofhu/one-browser-server
-SERVER_REF ?=
 WEB_REPOSITORY ?= voiceofhu/one-browser-web
 WEB_REF ?= main
 IMAGE_NAME ?= voiceofhu/one-browser-server
@@ -24,7 +40,6 @@ DEPLOY ?= true
 
 # Egress 发布与本地安装脚本服务输入。
 EGRESS_REPOSITORY ?= voiceofhu/one-browser-egress
-EGRESS_REF ?=
 EGRESS_INSTALLER_BIND ?= 0.0.0.0
 EGRESS_INSTALLER_PORT ?= 27610
 

@@ -13,13 +13,15 @@ stay private:
 ## Recommended Shape
 
 Keep source repositories private, but run the heavy CI/CD implementation here.
-The source repositories do not need tag-trigger workflows. Their local
-`make push-tag` targets push the tag first, then call `make deploy-server`,
-`make deploy-egress`, or `make deploy-app` in this repository with the pushed version
-and exact source commit SHA. `make deploy-egress` publishes both native Release assets
-and the multi-platform Docker image. Egress node installation is performed by
-the Server-generated `install.sh` command, not by an Action SSH deployment
-target.
+The source repositories do not need tag-trigger workflows or local `push-tag`
+release targets. Run `make deploy-server`, `make deploy-egress`, or
+`make deploy-app` in this repository instead. Each target enters its adjacent
+local source repository, generates or applies the requested version, commits
+only that product's version files, creates and atomically pushes the branch
+plus tag, then dispatches the central workflow with the exact pushed commit.
+`make deploy-egress` publishes both native Release assets and the multi-platform
+Docker image. Egress node installation is performed by the Server-generated
+`install.sh` command, not by an Action SSH deployment target.
 
 ## Workflows
 
@@ -27,7 +29,8 @@ target.
 
 File: `.github/workflows/server.yml`
 
-This workflow is dispatched by the local `make deploy-server` command. It
+This workflow is dispatched after the local `make deploy-server` command has
+published a new Server version commit and tag. It
 resolves immutable server and web revisions, checks whether the matching GHCR
 image already exists, and only rebuilds when that exact source pair is missing
 or the run is forced. A requested deploy still runs when the immutable image
@@ -68,12 +71,14 @@ optional version or `latest` aliases.
 
 ### Egress Release
 
-File: `.github/workflows/egress-release.yml`
+File: `.github/workflows/egress.yml`
 
-This workflow is dispatched by `make deploy-egress` alongside the build-only Egress
-image workflow. It resolves an immutable `one-browser-egress` commit, verifies
-the optional requested version against that commit's `Cargo.toml`, and
-publishes an immutable `egress-v<version>` Release in
+This unified workflow is dispatched once after `make deploy-egress` publishes
+the local Egress version commit and tag. It resolves
+one immutable `one-browser-egress` commit, verifies the optional requested
+version against that commit's `Cargo.toml`, then builds native Release assets
+and the multi-platform Docker image from that exact source revision.
+The native branch publishes an immutable `egress-v<version>` Release in
 `voiceofhu/one-browser-action`.
 The public, architecture-independent `install.sh` and `uninstall.sh` remain
 stable entrypoints at the repository root; they are not copied into the
@@ -130,14 +135,6 @@ Generated Server commands use the public root files from
 `raw.githubusercontent.com`; the local helper is only for editing and testing
 the scripts.
 
-### Egress Image
-
-File: `.github/workflows/egress.yml`
-
-`make deploy-egress` dispatches this image-only workflow after dispatching the native
-Release workflow. It resolves the same Egress ref and builds or locates the
-corresponding GHCR image without connecting to any node.
-
 The source and image are deliberately fixed to the trusted
 `voiceofhu/one-browser-egress` repository. The two architecture jobs publish
 run-specific staging tags, so concurrent runs cannot mix their amd64 and arm64
@@ -147,7 +144,7 @@ artifacts. A queued manifest job validates or publishes:
 - `<Cargo.toml version>` for `install.sh --version <version>`.
 - `latest` when the workflow resolves the Egress default branch.
 
-The workflow never force-overwrites this commit-addressed tag and fails closed
+The image branch never force-overwrites this commit-addressed tag and fails closed
 when registry inspection fails for any reason other than a confirmed missing
 manifest. Server-generated commands may request a semantic version explicitly;
 otherwise the installer resolves the newest Egress Release and installs its
@@ -158,7 +155,8 @@ nodes.
 
 File: `.github/workflows/app.yml`
 
-This workflow is dispatched by the local `make deploy-app` command. It checks
+This workflow is dispatched after the local `make deploy-app` command publishes
+the App version commit and tag. It checks
 out the requested app ref, or the latest commit on the repository's default
 branch. When no release tag is supplied, it reads the version from that commit's
 `package.json`, creates the Release in `voiceofhu/one-browser-action`, builds
@@ -179,14 +177,16 @@ It does not create a tag or GitHub Release.
 
 ## Manual Trigger Commands
 
-Run these commands from this repository with `GH_TOKEN` in `.env`:
+Run these commands from this repository with the source repositories checked
+out beside it and `GH_TOKEN` in `.env`:
 
 ```bash
 GH_TOKEN=ghp_xxx
 ```
 
 The token must be able to read the private source repositories and run workflows
-in `voiceofhu/one-browser-action`. Keep the raw token only; do
+in `voiceofhu/one-browser-action`. Git pushes use each local source repository's
+configured `origin` credentials. Keep the raw token only; do
 not include a `Bearer` prefix or shell quotes in `.env`. Classic tokens usually
 start with `ghp_`; fine-grained tokens usually start with `github_pat_`.
 
@@ -209,18 +209,18 @@ Trigger a server release:
 make deploy-server
 ```
 
-By default, this builds the latest commit on
-`voiceofhu/one-browser-server`'s default branch together with the selected web
-commit. It publishes the combined immutable
+By default, this generates a Beijing-time version, updates `Cargo.toml` and
+`Cargo.lock` in the adjacent `one-browser-server` checkout, commits and pushes
+that version with its tag, then builds the pushed commit together with the
+selected web commit. It publishes the combined immutable
 `sha-<server_sha>-web-<web_sha>` tag plus `latest`; pass `TAG` only when a
-versioned image tag is also needed.
+specific new version is required.
 
 Common server options:
 
 ```bash
 make deploy-server \
-  TAG=v26.709.1542 \
-  SERVER_REF=v26.709.1542 \
+  VERSION=26.709.1542 \
   WEB_REF=main \
   IMAGE_NAME=voiceofhu/one-browser-server
 ```
@@ -228,27 +228,28 @@ make deploy-server \
 Build without deploying:
 
 ```bash
-make deploy-server TAG=v26.709.1542 DEPLOY=false
+make deploy-server VERSION=26.709.1542 DEPLOY=false
 ```
 
-Package native Linux binaries and publish the multi-platform Docker image:
+Run the unified native package and multi-platform Docker image release:
 
 ```bash
 make deploy-egress
 ```
 
-By default, this resolves the latest Egress default-branch commit and reads its
-version from `Cargo.toml`. Pin both when preparing a specific package:
+By default, Make generates a new version and publishes the adjacent Egress
+checkout before the workflow resolves that exact commit. Set a specific new
+version when required:
 
 ```bash
-make deploy-egress TAG=v26.724.1 EGRESS_REF=v26.724.1
+make deploy-egress VERSION=26.724.1
 ```
 
-The resulting Action release is named `egress-v26.724.1`. The root
+The resulting Action Release is named `egress-v26.724.1`. The root
 `install.sh`/`uninstall.sh` entrypoints and their `scripts/egress/` modules are
 served directly from the repository and are not Release assets.
-The same command publishes `sha-<egress_sha>`, the Cargo semantic version, and
-`latest` for the default branch. It never connects to or changes an Egress
+The same workflow publishes `sha-<egress_sha>`, the Cargo semantic version,
+and `latest` for the default branch. It never connects to or changes an Egress
 node. Create the node in Server and run one of its generated installation
 commands on the target host.
 
@@ -258,12 +259,21 @@ Trigger an app release:
 make deploy-app
 ```
 
-By default, this builds the latest commit on
-`voiceofhu/one-browser-app`'s default branch and reads the release version from
-that commit's `package.json`. Override the source ref or version when needed:
+By default, this updates the adjacent App checkout's package, Tauri, and Cargo
+version files, commits and atomically pushes the branch plus tag, then builds
+the exact pushed commit. Set a specific new version when needed:
 
 ```bash
-make deploy-app TAG=v26.707.1821 APP_REF=main
+make deploy-app VERSION=26.707.1821
+```
+
+All three release targets require a clean source repository and a checked-out
+branch. They stop before changing files when the branch is behind or diverged
+from its `origin` branch. Preview the complete plan without updating versions,
+pushing, or dispatching:
+
+```bash
+make deploy-app DRY_RUN=true
 ```
 
 Trigger a Windows debug package build from `main`:
@@ -348,7 +358,9 @@ target manifest is required for node enrollment.
 
 ## Trigger Note
 
-`make push-tag` in each source repository stops immediately if the tag push
-fails. After a successful push it invokes the matching local deploy target with
-the current source commit SHA. A later dispatch failure does not roll back the
-already-pushed Git tag.
+The action repository's `deploy-*` targets atomically push the source branch and
+tag before dispatching the workflow. If that push fails, the local version
+commit and tag remain available for inspection and nothing is dispatched. If a
+later dispatch fails, the already-pushed source commit and tag are not rolled
+back. App and Server no longer expose their old `push-tag` release targets, so
+the action repository remains the single local release entrypoint.

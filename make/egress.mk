@@ -1,33 +1,28 @@
 # ==============================================================================
 # Egress 发布与本地脚本服务
 # ------------------------------------------------------------------------------
-# `deploy-egress` 触发 Release 与镜像工作流；本地脚本服务保持独立。
+# `deploy-egress` 触发统一的 Release 与镜像工作流；本地脚本服务保持独立。
 # ==============================================================================
 
 .PHONY: deploy-egress serve-egress-installer
 
-# 先触发原生产物发布，再触发 Docker 镜像构建。
+# 在本地 Egress 仓库更新版本、提交并推送 tag，再统一发布原生产物和镜像。
 deploy-egress:
 	@set -euo pipefail; \
-	tag="$(VERSION_TAG)"; \
-	if [ -n "$$tag" ] && [[ "$$tag" != v* ]]; then tag="v$$tag"; fi; \
-	egress_ref="$(EGRESS_REF)"; \
+	case "$(DRY_RUN)" in true|1|yes|y) ;; *) $(require_gh_token); $(normalize_gh_token) ;; esac; \
+	$(call prepare_source_release,Egress,$(EGRESS_DIR),Cargo.toml,Cargo.toml Cargo.lock,egress); \
+	egress_ref="$$source_ref"; \
 	printf '%s\n' \
 		"Egress package inputs:" \
 		"  action_repository: $(ACTION_REPOSITORY)" \
 		"  action_ref:        $(ACTION_REF)" \
 		"  egress_repository: $(EGRESS_REPOSITORY)" \
-		"  egress_ref:        $${egress_ref:-default branch}" \
-		"  version_tag:       $${tag:-Cargo.toml}"; \
+		"  egress_ref:        $$egress_ref" \
+		"  version_tag:       $$tag"; \
 	case "$(DRY_RUN)" in true|1|yes|y) exit 0 ;; esac; \
-	$(require_gh_token); \
-	$(normalize_gh_token); \
 	payload="$$(ruby -rjson -e 'puts JSON.generate({ref: ARGV[0], inputs: {egress_repository: ARGV[1], egress_ref: ARGV[2], version_tag: ARGV[3]}})' "$(ACTION_REF)" "$(EGRESS_REPOSITORY)" "$$egress_ref" "$$tag")"; \
-	$(call dispatch_workflow,egress-release.yml); \
-	echo "Triggered egress-release.yml in $(ACTION_REPOSITORY)"; \
-	payload="$$(ruby -rjson -e 'puts JSON.generate({ref: ARGV[0], inputs: {egress_ref: ARGV[1]}})' "$(ACTION_REF)" "$$egress_ref")"; \
 	$(call dispatch_workflow,egress.yml); \
-	echo "Triggered egress.yml Docker image packaging in $(ACTION_REPOSITORY)"
+	echo "Triggered unified egress.yml release in $(ACTION_REPOSITORY)"
 
 # 从项目根目录提供 install.sh / uninstall.sh，便于本机和 OrbStack 节点访问。
 serve-egress-installer:

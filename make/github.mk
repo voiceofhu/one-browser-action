@@ -113,7 +113,6 @@ check-token:
 	check_api "egress repository" "repos/$(EGRESS_REPOSITORY)"; \
 	check_api "app repository" "repos/$(APP_REPOSITORY)"; \
 	check_api "server workflow" "repos/$(ACTION_REPOSITORY)/actions/workflows/server.yml"; \
-	check_api "egress release workflow" "repos/$(ACTION_REPOSITORY)/actions/workflows/egress-release.yml"; \
 	check_api "egress workflow" "repos/$(ACTION_REPOSITORY)/actions/workflows/egress.yml"; \
 	check_api "app workflow" "repos/$(ACTION_REPOSITORY)/actions/workflows/app.yml"; \
 	check_api "app debug workflow" "repos/$(ACTION_REPOSITORY)/actions/workflows/app-debug.yml"; \

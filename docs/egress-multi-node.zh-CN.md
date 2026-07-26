@@ -27,14 +27,17 @@ Action 仓库的 Repository `GH_TOKEN` 需要：
 make deploy-egress
 ```
 
-该命令使用同一个 Egress ref，分别触发：
+该命令先进入相邻的 `one-browser-egress` 源码仓库更新 Cargo 版本，只提交
+`Cargo.toml` 和 `Cargo.lock`，原子推送当前分支与版本 tag；回到 Action 仓库后
+只触发一次 `.github/workflows/egress.yml`。工作流把刚推送的精确提交解析为
+Cargo 版本，再从同一个提交并行发布：
 
-1. `.github/workflows/egress-release.yml`
+1. 原生产物：
    - 构建 `linux/amd64` 与 `linux/arm64` 原生二进制；
    - 发布 `egress-v<版本>` Release；
    - 上传压缩包和 `SHA256SUMS`；
    - 保存同一份 Action Artifact。
-2. `.github/workflows/egress.yml`
+2. Docker 镜像：
    - 构建并上传多架构 Docker 镜像；
    - 发布 `sha-<egress_sha>`；
    - 发布 Cargo 语义版本标签；
@@ -44,7 +47,7 @@ make deploy-egress
 固定 Egress 版本时使用：
 
 ```bash
-make deploy-egress TAG=v26.725.1317 EGRESS_REF=v26.725.1317
+make deploy-egress VERSION=26.725.1317
 ```
 
 公开的跨架构入口保留在仓库根目录：

@@ -3,20 +3,22 @@
 set -Eeuo pipefail
 
 : "${GITHUB_OUTPUT:?GITHUB_OUTPUT is required}"
+: "${GH_TOKEN:?GH_TOKEN is required}"
 : "${REGISTRY:?REGISTRY is required}"
 : "${EGRESS_REPOSITORY:?EGRESS_REPOSITORY is required}"
 : "${IMAGE_NAME:?IMAGE_NAME is required}"
 : "${GITHUB_RUN_ID:?GITHUB_RUN_ID is required}"
 : "${GITHUB_RUN_ATTEMPT:?GITHUB_RUN_ATTEMPT is required}"
 
-egress_repository="$EGRESS_REPOSITORY"
+egress_repository="${EGRESS_REPOSITORY_INPUT:-$EGRESS_REPOSITORY}"
 egress_ref="${EGRESS_REF_INPUT:-}"
+version_tag="${VERSION_TAG_INPUT:-}"
 publish_latest=false
 image_name="$IMAGE_NAME"
 image_name="$(printf '%s' "$image_name" | tr '[:upper:]' '[:lower:]')"
 
-if [[ ! "$egress_repository" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]; then
-  echo "Invalid Egress repository: $egress_repository" >&2
+if [ "$egress_repository" != "$EGRESS_REPOSITORY" ]; then
+  echo "Egress releases only accept $EGRESS_REPOSITORY." >&2
   exit 1
 fi
 if [[ ! "$image_name" =~ ^[a-z0-9][a-z0-9._/-]*$ ]]; then
@@ -47,6 +49,16 @@ if [[ ! "$package_version" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)
   echo "Invalid Egress Cargo package version: $package_version" >&2
   exit 1
 fi
+
+if [ -n "$version_tag" ]; then
+  version_tag="${version_tag#egress-}"
+  version_tag="${version_tag#v}"
+  if [ "$version_tag" != "$package_version" ]; then
+    echo "Requested Egress version $version_tag does not match Cargo.toml $package_version." >&2
+    exit 1
+  fi
+fi
+release_tag="egress-v$package_version"
 image_revision_tag="sha-$egress_sha"
 image_build_tag="build-$egress_sha-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
 
@@ -54,6 +66,7 @@ image_build_tag="build-$egress_sha-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
   echo "egress_repository=$egress_repository"
   echo "egress_sha=$egress_sha"
   echo "package_version=$package_version"
+  echo "release_tag=$release_tag"
   echo "image_ref=$REGISTRY/$image_name"
   echo "image_revision_tag=$image_revision_tag"
   echo "image_build_tag=$image_build_tag"
@@ -61,5 +74,5 @@ image_build_tag="build-$egress_sha-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
 } >> "$GITHUB_OUTPUT"
 
 printf 'egress %s -> %s\n' "$egress_ref" "$egress_sha"
-printf 'version %s\n' "$package_version"
+printf 'release %s\n' "$release_tag"
 printf 'image  %s:%s\n' "$REGISTRY/$image_name" "$image_revision_tag"

@@ -6,22 +6,20 @@
 
 .PHONY: deploy-app debug-app
 
-# 触发 app.yml，构建并发布桌面 App。
+# 在本地 App 仓库更新版本、提交并推送 tag，再触发 app.yml。
 deploy-app:
 	@set -euo pipefail; \
-	tag="$(VERSION_TAG)"; \
-	if [ -n "$$tag" ] && [[ "$$tag" != v* ]]; then tag="v$$tag"; fi; \
-	app_ref="$(APP_REF)"; \
+	case "$(DRY_RUN)" in true|1|yes|y) ;; *) $(require_gh_token); $(normalize_gh_token) ;; esac; \
+	$(call prepare_source_release,App,$(APP_DIR),package.json,package.json src-tauri/tauri.conf.json src-tauri/Cargo.toml src-tauri/Cargo.lock,app); \
+	app_ref="$$source_ref"; \
 	printf '%s\n' \
 		"App release inputs:" \
 		"  action_repository: $(ACTION_REPOSITORY)" \
 		"  action_ref:        $(ACTION_REF)" \
 		"  app_repository:    $(APP_REPOSITORY)" \
-		"  app_ref:           $${app_ref:-default branch}" \
-		"  version_tag:       $${tag:-package.json}"; \
+		"  app_ref:           $$app_ref" \
+		"  version_tag:       $$tag"; \
 	case "$(DRY_RUN)" in true|1|yes|y) exit 0 ;; esac; \
-	$(require_gh_token); \
-	$(normalize_gh_token); \
 	payload="$$(ruby -rjson -e 'puts JSON.generate({ref: ARGV[0], inputs: {app_repository: ARGV[1], app_ref: ARGV[2], version_tag: ARGV[3]}})' "$(ACTION_REF)" "$(APP_REPOSITORY)" "$$app_ref" "$$tag")"; \
 	$(call dispatch_workflow,app.yml); \
 	echo "Triggered app.yml in $(ACTION_REPOSITORY)"

@@ -6,7 +6,7 @@
 
 .PHONY: deploy-app debug-app
 
-# 在本地 App 仓库更新版本、提交并推送 tag，再触发 app.yml。
+# 在本地 App 仓库更新版本、提交并推送 tag，部署 Web，再触发 app.yml。
 deploy-app:
 	@set -euo pipefail; \
 	case "$(DRY_RUN)" in true|1|yes|y) ;; *) $(require_gh_token); $(normalize_gh_token) ;; esac; \
@@ -18,8 +18,10 @@ deploy-app:
 		"  action_ref:        $(ACTION_REF)" \
 		"  app_repository:    $(APP_REPOSITORY)" \
 		"  app_ref:           $$app_ref" \
-		"  version_tag:       $$tag"; \
+		"  version_tag:       $$tag" \
+		"  web_deploy:        $(APP_DIR) make deploy-web"; \
 	case "$(DRY_RUN)" in true|1|yes|y) exit 0 ;; esac; \
+	$(MAKE) --no-print-directory -C "$(APP_DIR)" deploy-web; \
 	payload="$$(ruby -rjson -e 'puts JSON.generate({ref: ARGV[0], inputs: {app_repository: ARGV[1], app_ref: ARGV[2], version_tag: ARGV[3]}})' "$(ACTION_REF)" "$(APP_REPOSITORY)" "$$app_ref" "$$tag")"; \
 	$(call dispatch_workflow,app.yml); \
 	echo "Triggered app.yml in $(ACTION_REPOSITORY)"

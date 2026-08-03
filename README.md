@@ -156,7 +156,7 @@ nodes.
 File: `.github/workflows/app.yml`
 
 This workflow is dispatched after the local `make deploy-app` command publishes
-the App version commit and tag. It checks
+the App version commit and tag and deploys the App web build to nginx. It checks
 out the requested app ref, or the latest commit on the repository's default
 branch. When no release tag is supplied, it reads the version from that commit's
 `package.json`, creates the Release in `voiceofhu/one-browser-action`, builds
@@ -260,8 +260,11 @@ make deploy-app
 ```
 
 By default, this updates the adjacent App checkout's package, Tauri, and Cargo
-version files, commits and atomically pushes the branch plus tag, then builds
-the exact pushed commit. Set a specific new version when needed:
+version files, commits and atomically pushes the branch plus tag, runs the App
+repository's `make deploy-web` target to replace
+`ovh-fr:/opt/one-browser/app/dist`, then builds the exact pushed commit. The
+desktop workflow is not dispatched when the web deployment fails. Set a
+specific new version when needed:
 
 ```bash
 make deploy-app VERSION=26.707.1821

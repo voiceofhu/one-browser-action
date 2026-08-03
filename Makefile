@@ -39,7 +39,7 @@ help:
 		"  serve-egress-installer   在本地提供 Egress 安装和卸载脚本" \
 		"" \
 		"App:" \
-		"  deploy-app               更新 App 版本、提交 tag，再触发正式发布" \
+		"  deploy-app               更新 App 版本、部署 Web，再触发正式发布" \
 		"  debug-app                触发 Windows App 调试包构建" \
 		"" \
 		"常用变量:" \

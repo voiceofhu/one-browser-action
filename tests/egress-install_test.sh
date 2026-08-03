@@ -868,6 +868,12 @@ grep -qx 'EGRESS_MAX_STREAMS_PER_CONNECTION=256' "$ENV_FILE" || {
   exit 1
 }
 pass
+if ! grep -qx 'EGRESS_PUBLISH_ADDR=0.0.0.0' "$ENV_FILE" ||
+  ! grep -qx 'EGRESS_BIND_ADDR=0.0.0.0:27600' "$ENV_FILE"; then
+  printf 'FAIL: production environment listener changed unexpectedly\n' >&2
+  exit 1
+fi
+pass
 grep -q 'no-new-privileges:true' "$COMPOSE_FILE" || {
   printf 'FAIL: generated Compose is missing hardened security options\n' >&2
   exit 1
@@ -891,6 +897,16 @@ write_compose_file
 unset -f chown
 grep -qx 'EGRESS_TLS_ENABLED=false' "$ENV_FILE" || {
   printf 'FAIL: development environment did not disable TLS explicitly\n' >&2
+  exit 1
+}
+pass
+grep -qx 'EGRESS_PUBLISH_ADDR=\[::\]' "$ENV_FILE" || {
+  printf 'FAIL: development environment did not publish the OrbStack IPv6 listener\n' >&2
+  exit 1
+}
+pass
+grep -qx 'EGRESS_BIND_ADDR=\[::\]:27600' "$ENV_FILE" || {
+  printf 'FAIL: development native listener is not dual-stack\n' >&2
   exit 1
 }
 pass

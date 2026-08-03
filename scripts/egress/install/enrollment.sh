@@ -285,9 +285,15 @@ install_unconfigured_enrollment() {
 }
 
 write_service_env() {
-  local endpoint_port per_ip_limit per_connection_limit env_tmp
+  local bind_addr endpoint_port per_ip_limit per_connection_limit publish_addr env_tmp
 
   endpoint_port=${CONFIG_PUBLIC_ENDPOINT##*:}
+  bind_addr=0.0.0.0:27600
+  publish_addr=0.0.0.0
+  if [ "$CONFIG_TLS_ENABLED" = false ]; then
+    bind_addr='[::]:27600'
+    publish_addr='[::]'
+  fi
   per_ip_limit=64
   if [ "$CONFIG_MAX_CONNECTIONS" -lt "$per_ip_limit" ]; then
     per_ip_limit=$CONFIG_MAX_CONNECTIONS
@@ -309,9 +315,9 @@ write_service_env() {
     printf 'EGRESS_PUBLIC_ENDPOINT=%s\n' "$CONFIG_PUBLIC_ENDPOINT"
     printf 'EGRESS_CONTROL_URL=%s\n' "$CONFIG_CONTROL_URL"
     printf 'EGRESS_CONTROL_TOKEN=%s\n\n' "$CONFIG_CONTROL_TOKEN"
-    printf 'EGRESS_PUBLISH_ADDR=0.0.0.0\n'
+    printf 'EGRESS_PUBLISH_ADDR=%s\n' "$publish_addr"
     printf 'EGRESS_HOST_PORT=%s\n' "$endpoint_port"
-    printf 'EGRESS_BIND_ADDR=0.0.0.0:27600\n'
+    printf 'EGRESS_BIND_ADDR=%s\n' "$bind_addr"
     printf 'EGRESS_HEALTHCHECK_ADDR=127.0.0.1:27600\n'
     printf 'EGRESS_TLS_ENABLED=%s\n' "$CONFIG_TLS_ENABLED"
     if [ "$CONFIG_TLS_ENABLED" = true ]; then

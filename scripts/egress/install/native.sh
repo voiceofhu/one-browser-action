@@ -124,11 +124,48 @@ run_native_command() (
   "$NATIVE_BINARY" "$@"
 )
 
+native_service_main_pid() {
+  local pid
+
+  pid=$(systemctl show one-browser-egress --property=MainPID --value 2>/dev/null) ||
+    return 1
+  [[ "$pid" =~ ^[1-9][0-9]*$ ]] || return 1
+  printf '%s' "$pid"
+}
+
+native_service_is_running() {
+  local pid sub_state
+
+  systemctl is-active --quiet one-browser-egress || return 1
+  sub_state=$(systemctl show one-browser-egress --property=SubState --value 2>/dev/null) ||
+    return 1
+  [ "$sub_state" = running ] || return 1
+  pid=$(native_service_main_pid) || return 1
+  kill -0 "$pid" 2>/dev/null
+}
+
+native_service_healthcheck() {
+  local pid_after pid_before
+
+  native_service_is_running || return 1
+  pid_before=$(native_service_main_pid) || return 1
+  # A process that cannot bind may be visible briefly before systemd moves the
+  # unit into auto-restart. Require one stable PID before probing the listener,
+  # otherwise an unrelated stale Egress could satisfy the fixed-port probe.
+  sleep 1
+  native_service_is_running || return 1
+  pid_after=$(native_service_main_pid) || return 1
+  [ "$pid_before" = "$pid_after" ] || return 1
+  run_native_command healthcheck >/dev/null 2>&1 || return 1
+  native_service_is_running || return 1
+  [ "$pid_after" = "$(native_service_main_pid)" ]
+}
+
 wait_for_native_health() {
   local attempt
 
   for ((attempt = 1; attempt <= 36; attempt++)); do
-    if run_native_command healthcheck >/dev/null 2>&1; then
+    if native_service_healthcheck; then
       if [ "$CONFIG_TLS_ENABLED" = true ]; then
         log "Egress configuration, TLS listener, and Server readiness are healthy"
       else
@@ -136,8 +173,8 @@ wait_for_native_health() {
       fi
       return 0
     fi
-    if ! systemctl is-active --quiet one-browser-egress; then
-      die "Egress service stopped; inspect with: journalctl -u one-browser-egress"
+    if [ "$attempt" -ge 3 ] && ! native_service_is_running; then
+      die "Egress service did not remain running; inspect journalctl -u one-browser-egress and check whether its listener port is already in use"
     fi
     if [ "$attempt" -lt 36 ]; then
       sleep 5

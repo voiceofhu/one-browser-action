@@ -286,6 +286,7 @@ bootstrap() {
     configure_docker_repository enable_docker_service install_docker \
     ensure_native_user resolve_latest_version prepare_runtime_config \
     download_native_binary write_native_service run_native_command \
+    native_service_main_pid native_service_is_running native_service_healthcheck \
     wait_for_native_health start_native_egress \
     claim_enrollment commit_claim_response write_enrollment_fingerprint \
     require_matching_fingerprint \

@@ -366,6 +366,46 @@ expect_failure "missing native runtime files are incomplete" runtime_installatio
 chmod 0755 "$NATIVE_BINARY"
 expect_success "complete native runtime files are detected" runtime_installation_complete
 
+# shellcheck disable=SC2329
+mock_stale_native_listener_is_not_healthy() (
+  systemctl() {
+    case "$1" in
+      is-active) return 1 ;;
+      show)
+        case "$*" in
+          *MainPID*) printf '0\n' ;;
+          *SubState*) printf 'auto-restart\n' ;;
+        esac
+        ;;
+    esac
+  }
+  run_native_command() { return 0; }
+  native_service_healthcheck
+)
+expect_failure "stale listener cannot make a stopped native service healthy" \
+  mock_stale_native_listener_is_not_healthy
+
+# shellcheck disable=SC2329
+mock_stable_native_service_is_healthy() (
+  systemctl() {
+    case "$1" in
+      is-active) return 0 ;;
+      show)
+        case "$*" in
+          *MainPID*) printf '42\n' ;;
+          *SubState*) printf 'running\n' ;;
+        esac
+        ;;
+    esac
+  }
+  kill() { return 0; }
+  sleep() { :; }
+  run_native_command() { return 0; }
+  native_service_healthcheck
+)
+expect_success "healthcheck requires one stable native systemd MainPID" \
+  mock_stable_native_service_is_healthy
+
 response_file=$tmp_dir/enrollment.json
 cat >"$response_file" <<EOF
 {
